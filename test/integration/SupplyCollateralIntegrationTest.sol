@@ -34,6 +34,7 @@ contract SupplyCollateralIntegrationTest is BaseTest {
         vm.assume(token.code.length == 0);
 
         marketParams.collateralToken = token;
+        vm.prank(OWNER);
         morpho.createMarket(marketParams);
 
         vm.expectRevert(bytes(ErrorsLib.NO_CODE));

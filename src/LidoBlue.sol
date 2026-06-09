@@ -31,22 +31,25 @@ import {SharesMathLib} from "./libraries/SharesMathLib.sol";
 import {MarketParamsLib} from "./libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
-/// @title Morpho
-/// @author Morpho Labs
-/// @custom:contact security@morpho.org
-/// @notice The Morpho contract.
-contract Morpho is IMorphoStaticTyping {
+import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
+import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
+import {LidoBlueErrorsLib} from "./libraries/LidoBlueErrorsLib.sol";
+import {LidoBlueEventsLib} from "./libraries/LidoBlueEventsLib.sol";
+
+/// @title LidoBlue
+/// @author Lido Lending contributors. Forked from Morpho Blue by Morpho Labs.
+/// @notice Working-name Morpho Blue fork core with optional per-market controllers.
+/// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
+///      Optional controllers can enforce additional policy through action hooks. The
+///      `deleverage` extension is core functionality: with no controller it uses the
+///      core default rules, and with a controller it can be restricted further by market policy.
+contract LidoBlue is ILidoBlue {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
     using SharesMathLib for uint256;
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
-
-    /* IMMUTABLES */
-
-    /// @inheritdoc IMorphoBase
-    bytes32 public immutable DOMAIN_SEPARATOR;
 
     /* STORAGE */
 
@@ -69,15 +72,39 @@ contract Morpho is IMorphoStaticTyping {
     /// @inheritdoc IMorphoStaticTyping
     mapping(Id => MarketParams) public idToMarketParams;
 
-    /* CONSTRUCTOR */
+    /* FORK STORAGE */
 
+    /// @inheritdoc ILidoBlue
+    mapping(Id => address) public marketController;
+    /// @inheritdoc ILidoBlue
+    mapping(Id => bool) public deleverageEnabled;
+
+    /// @inheritdoc IMorphoBase
+    /// @dev Computed from `address(this)` at call time so it resolves to the proxy address under
+    ///      delegatecall, instead of being baked into the impl's bytecode like the upstream
+    ///      immutable would be.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+    }
+
+    /* INITIALIZER */
+
+    /// @dev One-shot initializer flag. Petrified to `true` by the impl constructor; proxies start
+    ///      at `false` and flip on the first `initialize` call.
+    bool internal _initialized;
+
+    /// @dev Petrifies the implementation; only a proxy can call `initialize`.
+    constructor() {
+        _initialized = true;
+    }
+
+    /// @notice One-shot initializer. Called by the proxy at deploy time.
     /// @param newOwner The new owner of the contract.
-    constructor(address newOwner) {
+    function initialize(address newOwner) external {
+        require(!_initialized, LidoBlueErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-
-        DOMAIN_SEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+        _initialized = true;
         owner = newOwner;
-
         emit EventsLib.SetOwner(newOwner);
     }
 
@@ -147,15 +174,44 @@ contract Morpho is IMorphoStaticTyping {
     /* MARKET CREATION */
 
     /// @inheritdoc IMorphoBase
-    function createMarket(MarketParams memory marketParams) external {
+    function createMarket(MarketParams memory marketParams) external onlyOwner {
+        _createMarket(marketParams, address(0), false);
+    }
+
+    /// @inheritdoc ILidoBlue
+    function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage)
+        external
+        onlyOwner
+    {
+        _createMarket(marketParams, controller, enableDeleverage);
+    }
+
+    /// @dev Implements both `createMarket` overloads. The `controller` and deleverage opt-in cannot be
+    ///      changed after creation.
+    function _createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) internal {
         Id id = marketParams.id();
         require(isIrmEnabled[marketParams.irm], ErrorsLib.IRM_NOT_ENABLED);
         require(isLltvEnabled[marketParams.lltv], ErrorsLib.LLTV_NOT_ENABLED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
+        require(controller != address(0) || !enableDeleverage, LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
 
         // Safe "unchecked" cast.
         market[id].lastUpdate = uint128(block.timestamp);
         idToMarketParams[id] = marketParams;
+
+        if (controller != address(0)) {
+            require(
+                Id.unwrap(ILidoBlueMarketController(controller).MARKET_ID()) == Id.unwrap(id),
+                LidoBlueErrorsLib.CONTROLLER_MISMATCH
+            );
+            marketController[id] = controller;
+            emit LidoBlueEventsLib.SetMarketController(id, controller);
+
+            if (enableDeleverage) {
+                deleverageEnabled[id] = true;
+                emit LidoBlueEventsLib.EnableDeleverage(id);
+            }
+        }
 
         emit EventsLib.CreateMarket(id, marketParams);
 
@@ -165,7 +221,7 @@ contract Morpho is IMorphoStaticTyping {
 
     /* SUPPLY MANAGEMENT */
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function supply(
         MarketParams memory marketParams,
         uint256 assets,
@@ -183,6 +239,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         else assets = shares.toAssetsUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Supply,
+            abi.encode(
+                ILidoBlueMarketController.SupplyHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].supplyShares += shares;
         market[id].totalSupplyShares += shares.toUint128();
         market[id].totalSupplyAssets += assets.toUint128();
@@ -196,7 +262,7 @@ contract Morpho is IMorphoStaticTyping {
         return (assets, shares);
     }
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function withdraw(
         MarketParams memory marketParams,
         uint256 assets,
@@ -216,6 +282,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         else assets = shares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Withdraw,
+            abi.encode(
+                ILidoBlueMarketController.WithdrawHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].supplyShares -= shares;
         market[id].totalSupplyShares -= shares.toUint128();
         market[id].totalSupplyAssets -= assets.toUint128();
@@ -231,7 +307,7 @@ contract Morpho is IMorphoStaticTyping {
 
     /* BORROW MANAGEMENT */
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function borrow(
         MarketParams memory marketParams,
         uint256 assets,
@@ -251,6 +327,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         else assets = shares.toAssetsDown(market[id].totalBorrowAssets, market[id].totalBorrowShares);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Borrow,
+            abi.encode(
+                ILidoBlueMarketController.BorrowHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].borrowShares += shares.toUint128();
         market[id].totalBorrowShares += shares.toUint128();
         market[id].totalBorrowAssets += assets.toUint128();
@@ -265,7 +351,7 @@ contract Morpho is IMorphoStaticTyping {
         return (assets, shares);
     }
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function repay(
         MarketParams memory marketParams,
         uint256 assets,
@@ -283,6 +369,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesDown(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         else assets = shares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Repay,
+            abi.encode(
+                ILidoBlueMarketController.RepayHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].borrowShares -= shares.toUint128();
         market[id].totalBorrowShares -= shares.toUint128();
         market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, assets).toUint128();
@@ -299,7 +395,7 @@ contract Morpho is IMorphoStaticTyping {
 
     /* COLLATERAL MANAGEMENT */
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes calldata data)
         external
     {
@@ -310,6 +406,15 @@ contract Morpho is IMorphoStaticTyping {
 
         // Don't accrue interest because it's not required and it saves gas.
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.SupplyCollateral,
+            abi.encode(
+                ILidoBlueMarketController.SupplyCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets
+                })
+            )
+        );
         position[id][onBehalf].collateral += assets.toUint128();
 
         emit EventsLib.SupplyCollateral(id, msg.sender, onBehalf, assets);
@@ -319,7 +424,7 @@ contract Morpho is IMorphoStaticTyping {
         IERC20(marketParams.collateralToken).safeTransferFrom(msg.sender, address(this), assets);
     }
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
     {
@@ -332,6 +437,15 @@ contract Morpho is IMorphoStaticTyping {
 
         _accrueInterest(marketParams, id);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.WithdrawCollateral,
+            abi.encode(
+                ILidoBlueMarketController.WithdrawCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets
+                })
+            )
+        );
         position[id][onBehalf].collateral -= assets.toUint128();
 
         require(_isHealthy(marketParams, id, onBehalf), ErrorsLib.INSUFFICIENT_COLLATERAL);
@@ -343,7 +457,7 @@ contract Morpho is IMorphoStaticTyping {
 
     /* LIQUIDATION */
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function liquidate(
         MarketParams memory marketParams,
         address borrower,
@@ -380,6 +494,16 @@ contract Morpho is IMorphoStaticTyping {
         }
         uint256 repaidAssets = repaidShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
 
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Liquidate,
+            abi.encode(
+                ILidoBlueMarketController.LiquidateHookData({
+                    caller: msg.sender, borrower: borrower, seizedAssets: seizedAssets, repaidShares: repaidShares
+                })
+            )
+        );
+
         position[id][borrower].borrowShares -= repaidShares.toUint128();
         market[id].totalBorrowShares -= repaidShares.toUint128();
         market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, repaidAssets).toUint128();
@@ -415,6 +539,71 @@ contract Morpho is IMorphoStaticTyping {
         return (seizedAssets, repaidAssets);
     }
 
+    /* DELEVERAGE */
+
+    /// @inheritdoc ILidoBlue
+    function deleverage(
+        MarketParams memory marketParams,
+        uint256 supplyShares,
+        address borrower,
+        address onBehalf,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+        Id id = marketParams.id();
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        require(deleverageEnabled[id], LidoBlueErrorsLib.DELEVERAGE_DISABLED);
+        require(supplyShares != 0, LidoBlueErrorsLib.ZERO_SHARES);
+        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
+
+        _accrueInterest(marketParams, id);
+
+        debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        require(debtCanceled > _availableLiquidity(id), LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
+
+        uint256 collateralPrice = IOracle(marketParams.oracle).price();
+        uint256 borrowerRawCollateral = position[id][borrower].collateral;
+        require(position[id][borrower].borrowShares != 0, LidoBlueErrorsLib.DELEVERAGE_NO_DEBT);
+
+        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        require(collateralSeized != 0, LidoBlueErrorsLib.DELEVERAGE_SLICE_TOO_SMALL);
+        require(collateralSeized <= borrowerRawCollateral, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL);
+
+        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_DEBT);
+
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.Deleverage,
+            abi.encode(
+                ILidoBlueMarketController.DeleverageHookData({
+                    caller: msg.sender,
+                    onBehalf: onBehalf,
+                    borrower: borrower,
+                    receiver: receiver,
+                    assetsToCancel: debtCanceled,
+                    collateralSeized: collateralSeized
+                })
+            )
+        );
+
+        position[id][onBehalf].supplyShares -= supplyShares;
+        market[id].totalSupplyShares -= supplyShares.toUint128();
+        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
+
+        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
+
+        position[id][borrower].collateral -= collateralSeized.toUint128();
+
+        emit LidoBlueEventsLib.Deleverage(
+            id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled
+        );
+
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
+    }
+
     /* FLASH LOANS */
 
     /// @inheritdoc IMorphoBase
@@ -448,7 +637,7 @@ contract Morpho is IMorphoStaticTyping {
         require(authorization.nonce == nonce[authorization.authorizer]++, ErrorsLib.INVALID_NONCE);
 
         bytes32 hashStruct = keccak256(abi.encode(AUTHORIZATION_TYPEHASH, authorization));
-        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR, hashStruct));
+        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR(), hashStruct));
         address signatory = ecrecover(digest, signature.v, signature.r, signature.s);
 
         require(signatory != address(0) && authorization.authorizer == signatory, ErrorsLib.INVALID_SIGNATURE);
@@ -469,10 +658,16 @@ contract Morpho is IMorphoStaticTyping {
 
     /* INTEREST MANAGEMENT */
 
-    /// @inheritdoc IMorphoBase
+    /// @inheritdoc ILidoBlue
     function accrueInterest(MarketParams memory marketParams) external {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+
+        _hook(
+            id,
+            ILidoBlueMarketController.HookEvent.AccrueInterest,
+            abi.encode(ILidoBlueMarketController.AccrueInterestHookData({caller: msg.sender}))
+        );
 
         _accrueInterest(marketParams, id);
     }
@@ -534,6 +729,22 @@ contract Morpho is IMorphoStaticTyping {
             .wMulDown(marketParams.lltv);
 
         return maxBorrow >= borrowed;
+    }
+
+    /* CONTROLLER HELPERS */
+
+    /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
+    ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
+    function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
+        address controller = marketController[id];
+        if (controller != address(0)) ILidoBlueMarketController(controller).on(id, e, data);
+    }
+
+    /// @dev Returns the market's loan assets not currently borrowed. Does not include interest accrued
+    ///      since the last update.
+    function _availableLiquidity(Id id) internal view returns (uint256) {
+        if (market[id].totalSupplyAssets <= market[id].totalBorrowAssets) return 0;
+        return uint256(market[id].totalSupplyAssets) - uint256(market[id].totalBorrowAssets);
     }
 
     /* STORAGE VIEW */

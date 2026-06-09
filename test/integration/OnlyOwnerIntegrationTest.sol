@@ -8,14 +8,16 @@ contract OnlyOwnerIntegrationTest is BaseTest {
     using MorphoLib for IMorpho;
 
     function testDeployWithAddressZero() public {
+        address morphoImpl = address(new LidoBlue());
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
-        new Morpho(address(0));
+        new TestProxy(morphoImpl, abi.encodeCall(LidoBlue.initialize, (address(0))));
     }
 
     function testDeployEmitOwner() public {
+        address morphoImpl = address(new LidoBlue());
         vm.expectEmit();
         emit EventsLib.SetOwner(OWNER);
-        new Morpho(OWNER);
+        new TestProxy(morphoImpl, abi.encodeCall(LidoBlue.initialize, (OWNER)));
     }
 
     function testSetOwnerWhenNotOwner(address addressFuzz) public {

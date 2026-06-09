@@ -10,10 +10,11 @@ import {IrmMock} from "../src/mocks/IrmMock.sol";
 import {ERC20Mock} from "../src/mocks/ERC20Mock.sol";
 import {OracleMock} from "../src/mocks/OracleMock.sol";
 
-import "../src/Morpho.sol";
+import "../src/LidoBlue.sol";
 import {Math} from "./helpers/Math.sol";
 import {SigUtils} from "./helpers/SigUtils.sol";
 import {ArrayLib} from "./helpers/ArrayLib.sol";
+import {TestProxy} from "./helpers/TestProxy.sol";
 import {MorphoLib} from "../src/libraries/periphery/MorphoLib.sol";
 import {MorphoBalancesLib} from "../src/libraries/periphery/MorphoBalancesLib.sol";
 
@@ -67,7 +68,8 @@ contract BaseTest is Test {
         OWNER = makeAddr("Owner");
         FEE_RECIPIENT = makeAddr("FeeRecipient");
 
-        morpho = IMorpho(address(new Morpho(OWNER)));
+        address morphoImpl = address(new LidoBlue());
+        morpho = IMorpho(address(new TestProxy(morphoImpl, abi.encodeCall(LidoBlue.initialize, (OWNER)))));
 
         loanToken = new ERC20Mock();
         vm.label(address(loanToken), "LoanToken");

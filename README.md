@@ -7,14 +7,23 @@ It also enables higher collateralization factors, improved interest rates, and l
 The protocol is designed to be a simple, immutable, and governance-minimized base layer that allows for a wide variety of other layers to be built on top.
 Morpho Blue also offers a convenient developer experience with a singleton implementation, callbacks, free flash loans, and account management features.
 
+## This fork
+
+This repository (`morpho-lido-blue`) is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, adapted for the Lido Lending product and imported by the product repository as a subrepository.
+The core contract `src/Morpho.sol` is renamed to `src/LidoBlue.sol` and extended with optional per-market controllers, controller action hooks, a `deleverage` settlement primitive, and an upgradeable-proxy initializer.
+
+Inherited Morpho Blue source files are used under `GPL-2.0-or-later`.
+Lido Lending modifications, the exact upstream fork point, and the preserved/changed assumptions are documented in [`FORK_NOTES.md`](./FORK_NOTES.md).
+
 ## Whitepaper
 
 The protocol is described in detail in the [Morpho Blue Whitepaper](./morpho-blue-whitepaper.pdf).
 
 ## Repository Structure
 
-[`Morpho.sol`](./src/Morpho.sol) contains most of the source code of the core contract of Morpho Blue.
-It solely relies on internal libraries in the [`src/libraries`](./src/libraries) subdirectory.
+[`LidoBlue.sol`](./src/LidoBlue.sol) contains most of the source code of the forked core contract.
+It relies on internal libraries in the [`src/libraries`](./src/libraries) subdirectory, including the fork-added `LidoBlueErrorsLib` and `LidoBlueEventsLib`.
+The fork's typed interfaces are [`ILidoBlue.sol`](./src/interfaces/ILidoBlue.sol) and [`ILidoBlueMarketController.sol`](./src/interfaces/ILidoBlueMarketController.sol).
 
 Libraries in the [`src/libraries/periphery`](./src/libraries/periphery) directory are not used by Morpho Blue.
 They are useful helpers that integrators can reuse or adapt to their own needs.
