@@ -37,6 +37,10 @@ contract ReentrantControllerMock is ILidoBlueMarketController {
         return type(uint256).max;
     }
 
+    /// @dev Accepts flash loans, so an armed `flashLoan` reentry is valid on its own (repayment
+    ///      is covered by the test's blanket approval).
+    function onMorphoFlashLoan(uint256, bytes calldata) external {}
+
     function on(Id, HookEvent, bytes calldata) external {
         if (reentryCall.length == 0 || _entered) return;
         _entered = true;

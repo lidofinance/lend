@@ -6,7 +6,8 @@ via_ir = true
 optimizer = true
 optimizer_runs = 999999
 bytecode_hash = "none"
-evm_version = "paris"
+solc = "0.8.30"
+evm_version = "cancun"
 
 [profile.default.invariant]
 runs = 1024

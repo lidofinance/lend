@@ -34,4 +34,7 @@ library LidoBlueErrorsLib {
 
     /// @notice Thrown when `initialize` is called after the contract is already initialized.
     string internal constant ALREADY_INITIALIZED = "already initialized";
+
+    /// @notice Thrown when a locked entrypoint is reentered while a controller hook is executing.
+    string internal constant HOOK_REENTRANCY = "hook reentrancy";
 }
