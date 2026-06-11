@@ -3,6 +3,9 @@ pragma solidity ^0.8.0;
 
 import {MorphoStorageLib} from "../../../src/libraries/periphery/MorphoStorageLib.sol";
 import {SigUtils} from "../../helpers/SigUtils.sol";
+import {ControllerMock} from "../../../src/mocks/ControllerMock.sol";
+import {ILidoBlue} from "../../../src/interfaces/ILidoBlue.sol";
+import {LidoBlue} from "../../../src/LidoBlue.sol";
 
 import "../../BaseTest.sol";
 
@@ -10,6 +13,7 @@ contract MorphoStorageLibTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
+    using MarketParamsLib for MarketParams;
 
     function testStorage(uint256 amountSupplied, uint256 amountBorrowed, uint256 timeElapsed, uint256 fee) public {
         // Prepare storage layout with non empty values.
@@ -100,5 +104,31 @@ contract MorphoStorageLibTest is BaseTest {
         assertEq(abi.decode(abi.encode(values[13]), (address)), expectedParams.oracle);
         assertEq(abi.decode(abi.encode(values[14]), (address)), expectedParams.irm);
         assertEq(uint256(values[15]), expectedParams.lltv);
+    }
+
+    function testStorageForkSlots() public {
+        // Controller-bound, deleverage-enabled market (irm == 0 gives an id distinct from the default).
+        MarketParams memory cp = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(0),
+            lltv: marketParams.lltv
+        });
+        Id cid = cp.id();
+        address controller = address(new ControllerMock(cid));
+        vm.prank(OWNER);
+        ILidoBlue(address(morpho)).createMarket(cp, controller, true);
+
+        bytes32[] memory slots = new bytes32[](2);
+        slots[0] = MorphoStorageLib.marketControllerSlot(cid);
+        slots[1] = MorphoStorageLib.deleverageEnabledSlot(cid);
+
+        bytes32[] memory values = morpho.extSloads(slots);
+
+        assertEq(abi.decode(abi.encode(values[0]), (address)), controller);
+        assertEq(abi.decode(abi.encode(values[0]), (address)), LidoBlue(address(morpho)).marketController(cid));
+        assertEq(abi.decode(abi.encode(values[1]), (bool)), true);
+        assertEq(abi.decode(abi.encode(values[1]), (bool)), LidoBlue(address(morpho)).deleverageEnabled(cid));
     }
 }

@@ -20,6 +20,10 @@ library MorphoStorageLib {
     uint256 internal constant IS_AUTHORIZED_SLOT = 6;
     uint256 internal constant NONCE_SLOT = 7;
     uint256 internal constant ID_TO_MARKET_PARAMS_SLOT = 8;
+    // Fork-added slots (LidoBlue), appended after upstream storage; see FORK_NOTES.md "Storage layout".
+    uint256 internal constant MARKET_CONTROLLER_SLOT = 9;
+    uint256 internal constant DELEVERAGE_ENABLED_SLOT = 10;
+    // Slot 11 holds the internal `_initialized` flag (proxy init): not integrator-facing, so no read helper.
 
     /* SLOT OFFSETS */
 
@@ -106,5 +110,13 @@ library MorphoStorageLib {
 
     function idToLltvSlot(Id id) internal pure returns (bytes32) {
         return bytes32(uint256(keccak256(abi.encode(id, ID_TO_MARKET_PARAMS_SLOT))) + LLTV_OFFSET);
+    }
+
+    function marketControllerSlot(Id id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, MARKET_CONTROLLER_SLOT));
+    }
+
+    function deleverageEnabledSlot(Id id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, DELEVERAGE_ENABLED_SLOT));
     }
 }
