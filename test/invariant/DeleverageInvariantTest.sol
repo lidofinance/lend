@@ -34,6 +34,7 @@ contract DeleverageInvariantTest is InvariantTest {
     uint256 internal constant DRIFT_CAP = 100 * MAX_TEST_AMOUNT;
 
     address internal LENDER;
+    address internal LENDER2; // second supplier; never acts again — a cut must leave its position untouched
     address internal CB; // controller-market borrower
     address internal CB2; // second borrower (bystander when a cut targets CB, and vice versa)
 
@@ -62,6 +63,7 @@ contract DeleverageInvariantTest is InvariantTest {
         uint256 receiverCollateralBalance;
         uint256 bystanderBorrowShares;
         uint256 bystanderCollateral;
+        uint256 lender2Shares;
     }
 
     function _targetSenders() internal override {
@@ -99,6 +101,18 @@ contract DeleverageInvariantTest is InvariantTest {
         // shares within uint128.
         _seedBorrower(CB);
         _seedBorrower(CB2);
+
+        // A second lender that never acts again. Every cut targets onBehalf == LENDER, so LENDER2's position
+        // must stay untouched. Its supply is matched by a CB borrow so free liquidity stays ~0.
+        LENDER2 = makeAddr("Lender2");
+        uint256 seed = MAX_TEST_AMOUNT / 10;
+        loanToken.setBalance(LENDER2, seed);
+        vm.startPrank(LENDER2);
+        loanToken.approve(address(morpho), type(uint256).max);
+        morpho.supply(cParams, seed, 0, LENDER2, hex"");
+        vm.stopPrank();
+        vm.prank(CB);
+        morpho.borrow(cParams, seed, 0, CB, CB);
     }
 
     function _seedBorrower(address borrower) internal {
@@ -219,8 +233,8 @@ contract DeleverageInvariantTest is InvariantTest {
     /* INVARIANTS */
 
     function invariantSupplyShares() public {
-        uint256 sum = morpho.supplyShares(cId, LENDER) + morpho.supplyShares(cId, CB) + morpho.supplyShares(cId, CB2)
-            + morpho.supplyShares(cId, FEE_RECIPIENT);
+        uint256 sum = morpho.supplyShares(cId, LENDER) + morpho.supplyShares(cId, LENDER2)
+            + morpho.supplyShares(cId, CB) + morpho.supplyShares(cId, CB2) + morpho.supplyShares(cId, FEE_RECIPIENT);
         assertEq(sum, morpho.totalSupplyShares(cId), "supply shares");
     }
 
@@ -249,7 +263,8 @@ contract DeleverageInvariantTest is InvariantTest {
             collateral: morpho.collateral(cId, borrower),
             receiverCollateralBalance: collateralToken.balanceOf(LENDER),
             bystanderBorrowShares: morpho.borrowShares(cId, bystander),
-            bystanderCollateral: morpho.collateral(cId, bystander)
+            bystanderCollateral: morpho.collateral(cId, bystander),
+            lender2Shares: morpho.supplyShares(cId, LENDER2)
         });
 
         vm.prank(LENDER);
@@ -277,6 +292,12 @@ contract DeleverageInvariantTest is InvariantTest {
         // The bystander borrower is untouched.
         assertEq(morpho.borrowShares(cId, bystander), b.bystanderBorrowShares, "dlv: bystander borrowShares");
         assertEq(morpho.collateral(cId, bystander), b.bystanderCollateral, "dlv: bystander collateral");
+
+        // The bystander lender is untouched: its shares are unchanged and its claim is not diluted by the cut.
+        assertEq(morpho.supplyShares(cId, LENDER2), b.lender2Shares, "dlv: bystander lender shares");
+        uint256 l2Before = b.lender2Shares.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares);
+        uint256 l2After = b.lender2Shares.toAssetsDown(morpho.totalSupplyAssets(cId), morpho.totalSupplyShares(cId));
+        assertGe(l2After, l2Before, "dlv: bystander lender claim");
 
         // Value conservation: the lender seizes collateral worth no more than the debt it cancels, and not
         // meaningfully less. Derived from "deleverage is a 1:1 value swap", independent of the seize formula.

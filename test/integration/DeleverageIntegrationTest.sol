@@ -97,12 +97,12 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
         _lido().deleverage(marketParams, avail * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
 
-        // debtCanceled == avail + 1 clears the gate and actually executes.
+        // debtCanceled == avail + 1 clears the gate and executes: at 1:1 it seizes exactly avail + 1.
         uint256 sharesBefore = morpho.supplyShares(id, address(this));
-        (uint256 seized,) = _lido()
-            .deleverage(marketParams, (avail + 1) * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
-        assertGt(seized, 0, "avail+1 executed");
-        assertLt(morpho.supplyShares(id, address(this)), sharesBefore, "lender shares reduced");
+        uint256 slice = (avail + 1) * SharesMathLib.VIRTUAL_SHARES;
+        (uint256 seized,) = _lido().deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+        assertEq(seized, avail + 1, "seized exactly the cancelled debt at 1:1");
+        assertEq(morpho.supplyShares(id, address(this)), sharesBefore - slice, "lender shares reduced by the slice");
     }
 
     // Each cap now has its own error, so the revert string alone pins which check fired.
@@ -155,6 +155,81 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         _lido().deleverage(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
 
         assertEq(morpho.supplyShares(id, address(this)), sharesBefore - supplyShares, "lender shares reduced");
+    }
+
+    function testDeleverageBorrowerExitsWhole(uint256 supplied, uint256 sliceSeed) public {
+        supplied = bound(supplied, MIN_TEST_AMOUNT, MAX_TEST_AMOUNT / 2);
+        uint256 collateral = 2 * supplied;
+        _openPosition(supplied, collateral, supplied); // supply == borrow → free liquidity 0
+
+        uint256 lenderShares = morpho.supplyShares(id, address(this));
+        uint256 slice = bound(sliceSeed, lenderShares / 4, (lenderShares * 3) / 4);
+        (uint256 seized, uint256 canceled) = _lido().deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+        assertEq(seized, canceled, "fair 1:1 swap"); // price is 1:1
+        assertEq(morpho.collateral(id, BORROWER), collateral - seized, "borrower collateral debited by the seizure");
+
+        // The borrower clears the residual debt and pulls out the remaining collateral.
+        vm.startPrank(BORROWER);
+        loanToken.setBalance(BORROWER, supplied);
+        morpho.repay(marketParams, 0, morpho.borrowShares(id, BORROWER), BORROWER, hex"");
+        morpho.withdrawCollateral(marketParams, morpho.collateral(id, BORROWER), BORROWER, BORROWER);
+        vm.stopPrank();
+
+        // Whole: recovered the unseized collateral, no residual debt, no stuck collateral.
+        assertEq(collateralToken.balanceOf(BORROWER), collateral - seized, "borrower recovered the rest");
+        assertEq(morpho.borrowShares(id, BORROWER), 0, "no residual debt");
+        assertEq(morpho.collateral(id, BORROWER), 0, "no stuck collateral");
+    }
+
+    function testDeleverageFullDrainLeavesMarketUsable(uint256 supplied) public {
+        supplied = bound(supplied, MIN_TEST_AMOUNT, MAX_TEST_AMOUNT / 2);
+        uint256 collateral = 2 * supplied;
+        _openPosition(supplied, collateral, supplied); // sole lender, supply == borrow → free liquidity 0
+
+        uint256 allShares = morpho.supplyShares(id, address(this));
+        (uint256 seized,) = _lido().deleverage(marketParams, allShares, BORROWER, address(this), RECEIVER);
+
+        // Cancelling the entire stake zeroes the market exactly: at a single first supply, totalShares ==
+        // assets * VIRTUAL_SHARES, so the cancellation leaves no rounding remainder.
+        assertEq(seized, supplied, "seized the whole supply at 1:1");
+        assertEq(morpho.totalSupplyShares(id), 0, "supply shares zeroed");
+        assertEq(morpho.totalSupplyAssets(id), 0, "supply assets zeroed");
+        assertEq(morpho.totalBorrowShares(id), 0, "borrow shares zeroed");
+        assertEq(morpho.totalBorrowAssets(id), 0, "borrow assets zeroed");
+        assertEq(morpho.collateral(id, BORROWER), collateral - seized, "borrower keeps the unseized collateral");
+
+        // Not bricked: a fresh deposit into the zeroed market round-trips exactly.
+        uint256 fresh = MIN_TEST_AMOUNT;
+        loanToken.setBalance(address(this), fresh);
+        morpho.supply(marketParams, fresh, 0, address(this), hex"");
+        morpho.withdraw(marketParams, 0, morpho.supplyShares(id, address(this)), address(this), address(this));
+        assertEq(loanToken.balanceOf(address(this)), fresh, "fresh deposit round-trips exactly");
+    }
+
+    function testDeleverageSelfPosition(uint256 supplied, uint256 sliceSeed) public {
+        supplied = bound(supplied, MIN_TEST_AMOUNT, MAX_TEST_AMOUNT / 2);
+        uint256 collateral = 2 * supplied;
+        _supply(supplied); // address(this) lends
+        collateralToken.setBalance(address(this), collateral);
+        morpho.supplyCollateral(marketParams, collateral, address(this), hex"");
+        morpho.borrow(marketParams, supplied, 0, address(this), address(this)); // and borrows → free liquidity 0
+
+        uint256 supplyBefore = morpho.supplyShares(id, address(this));
+        uint256 borrowBefore = morpho.borrowShares(id, address(this));
+        uint256 tBABefore = morpho.totalBorrowAssets(id);
+        uint256 tBSBefore = morpho.totalBorrowShares(id);
+
+        // onBehalf == borrower == address(this).
+        uint256 slice = bound(sliceSeed, supplyBefore / 4, (supplyBefore * 3) / 4);
+        (uint256 seized, uint256 canceled) =
+            _lido().deleverage(marketParams, slice, address(this), address(this), RECEIVER);
+        assertEq(seized, canceled, "fair 1:1 swap");
+
+        uint256 burn = canceled.toSharesUp(tBABefore, tBSBefore);
+        assertEq(morpho.supplyShares(id, address(this)), supplyBefore - slice, "self: supply shares burned");
+        assertEq(morpho.borrowShares(id, address(this)), borrowBefore - burn, "self: debt shares burned");
+        assertEq(morpho.collateral(id, address(this)), collateral - seized, "self: collateral seized");
+        assertEq(collateralToken.balanceOf(RECEIVER), seized, "receiver got the seized collateral");
     }
 
     function testDeleverageControllerCanBlock() public {
