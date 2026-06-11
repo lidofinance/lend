@@ -42,7 +42,6 @@ contract BaseInvariantTest is InvariantTest {
             });
 
             vm.startPrank(OWNER);
-            morpho.enableLltv(_marketParams.lltv);
             morpho.createMarket(_marketParams);
             vm.stopPrank();
 

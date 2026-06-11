@@ -84,9 +84,6 @@ contract BaseTest is Test {
         irm = new IrmMock();
 
         vm.startPrank(OWNER);
-        morpho.enableIrm(address(0));
-        morpho.enableIrm(address(irm));
-        morpho.enableLltv(0);
         morpho.setFeeRecipient(FEE_RECIPIENT);
         vm.stopPrank();
 
@@ -129,7 +126,6 @@ contract BaseTest is Test {
         id = marketParams.id();
 
         vm.startPrank(OWNER);
-        if (!morpho.isLltvEnabled(lltv)) morpho.enableLltv(lltv);
         if (morpho.lastUpdate(marketParams.id()) == 0) morpho.createMarket(marketParams);
         vm.stopPrank();
 

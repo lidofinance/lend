@@ -358,8 +358,6 @@ contract DeleverageIntegrationTest is BaseTestWithController {
     // share rounding is actually exercised (price stays 1:1 to isolate it from the price-based rounding).
     function testDeleverageShareRoundingWithInterestFuzz(uint256 elapsed, uint256 sliceSeed) public {
         uint256 lltv = 0.5 ether; // distinct from the inherited (0.8) and base markets → fresh id
-        vm.prank(OWNER);
-        morpho.enableLltv(lltv);
         MarketParams memory mp = MarketParams({
             loanToken: address(loanToken),
             collateralToken: address(collateralToken),

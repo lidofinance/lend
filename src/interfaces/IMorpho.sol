@@ -82,14 +82,6 @@ interface IMorphoBase {
     /// @dev Warning: The owner can be set to the zero address.
     function setOwner(address newOwner) external;
 
-    /// @notice Enables `irm` as a possible IRM for market creation.
-    /// @dev Warning: It is not possible to disable an IRM.
-    function enableIrm(address irm) external;
-
-    /// @notice Enables `lltv` as a possible LLTV for market creation.
-    /// @dev Warning: It is not possible to disable a LLTV.
-    function enableLltv(uint256 lltv) external;
-
     /// @notice Sets the `newFee` for the given market `marketParams`.
     /// @param newFee The new fee, scaled by WAD.
     /// @dev Warning: The recipient can be the zero address.
