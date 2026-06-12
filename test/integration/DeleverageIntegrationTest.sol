@@ -5,7 +5,7 @@ import "../BaseTestWithController.sol";
 
 import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
 import {ILidoBlueMarketController} from "../../src/interfaces/ILidoBlueMarketController.sol";
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract DeleverageIntegrationTest is BaseTestWithController {
     using MathLib for uint256;
@@ -60,12 +60,12 @@ contract DeleverageIntegrationTest is BaseTestWithController {
             irm: address(irm),
             lltv: DEFAULT_TEST_LLTV
         });
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_DISABLED));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_DISABLED));
         _lido().deleverage(base, 1, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageZeroShares() public {
-        vm.expectRevert(bytes(LidoBlueErrorsLib.ZERO_SHARES));
+        vm.expectRevert(bytes(ErrorsLib.ZERO_SHARES));
         _lido().deleverage(marketParams, 0, BORROWER, address(this), RECEIVER);
     }
 
@@ -84,7 +84,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         _openPosition(100e18, 200e18, 100e18);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
         // Target ONBEHALF, who never borrowed → no debt.
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_NO_DEBT));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_NO_DEBT));
         _lido().deleverage(marketParams, supplyShares, ONBEHALF, address(this), RECEIVER);
     }
 
@@ -94,7 +94,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         assertEq(avail, 30e18, "avail");
 
         // debtCanceled == avail must revert (the gate requires strictly greater).
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
         _lido().deleverage(marketParams, avail * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
 
         // debtCanceled == avail + 1 clears the gate and executes: at 1:1 it seizes exactly avail + 1.
@@ -111,7 +111,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         _openPosition(100e18, 200e18, 100e18);
         oracle.setPrice(MAX_COLLATERAL_PRICE);
         // debtCanceled == 1 → collateralSeized = 1 * SCALE / 1e40 rounds to 0.
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_SLICE_TOO_SMALL));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_SLICE_TOO_SMALL));
         _lido().deleverage(marketParams, 1 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 
@@ -119,14 +119,14 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         _openPosition(100e18, 100e18, 70e18);
         oracle.setPrice(ORACLE_PRICE_SCALE / 2); // collateral now worth 50e18
         // debtCanceled 60e18 → collateralSeized 120e18 > 100e18 collateral.
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL));
         _lido().deleverage(marketParams, 60e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageOverCapBorrowShares() public {
         _openPosition(100e18, 100e18, 70e18);
         // debtCanceled 80e18 → burns more than the 70e18 debt (collateralSeized 80e18 <= 100e18 collateral).
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_DEBT));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_EXCEEDS_DEBT));
         _lido().deleverage(marketParams, 80e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 

@@ -4,7 +4,7 @@ pragma solidity >=0.8.0;
 import {Id} from "./IMorpho.sol";
 
 /// @title ILidoBlueMarketController
-/// @author Lido Lending contributors. Forked from Morpho Blue by Morpho Labs.
+/// @author Lido.
 /// @notice The market controller's interface. The core dispatches every action through a single
 /// `on(id, e, data)` entrypoint (HookEvent order and struct layouts must match the core so the abi-encoded
 /// hook payloads stay compatible). It also declares read views (`nextDeleverageCut`, `allowedSliceFor`) for

@@ -33,11 +33,9 @@ import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
 import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
 import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
-import {LidoBlueErrorsLib} from "./libraries/LidoBlueErrorsLib.sol";
-import {LidoBlueEventsLib} from "./libraries/LidoBlueEventsLib.sol";
 
 /// @title LidoBlue
-/// @author Lido Lending contributors. Forked from Morpho Blue by Morpho Labs.
+/// @author Morpho Labs. Modified by Lido.
 /// @notice Working-name Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
@@ -102,10 +100,9 @@ contract LidoBlue is ILidoBlue {
         _initialized = true;
     }
 
-    /// @notice One-shot initializer. Called by the proxy at deploy time.
-    /// @param newOwner The new owner of the contract.
+    /// @inheritdoc ILidoBlue
     function initialize(address newOwner) external {
-        require(!_initialized, LidoBlueErrorsLib.ALREADY_INITIALIZED);
+        require(!_initialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
         _initialized = true;
         owner = newOwner;
@@ -122,7 +119,7 @@ contract LidoBlue is ILidoBlue {
 
     /// @dev Reverts if a controller hook is currently executing.
     modifier nonHookReentrant() {
-        require(!_hookInProgress, LidoBlueErrorsLib.HOOK_REENTRANCY);
+        require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
         _;
     }
 
@@ -184,7 +181,7 @@ contract LidoBlue is ILidoBlue {
         Id id = marketParams.id();
         require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
-        require(controller != address(0) || !enableDeleverage, LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
+        require(controller != address(0) || !enableDeleverage, ErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
 
         if (!isIrmEnabled[marketParams.irm]) {
             isIrmEnabled[marketParams.irm] = true;
@@ -202,14 +199,14 @@ contract LidoBlue is ILidoBlue {
         if (controller != address(0)) {
             require(
                 Id.unwrap(ILidoBlueMarketController(controller).MARKET_ID()) == Id.unwrap(id),
-                LidoBlueErrorsLib.CONTROLLER_MISMATCH
+                ErrorsLib.CONTROLLER_MISMATCH
             );
             marketController[id] = controller;
-            emit LidoBlueEventsLib.SetMarketController(id, controller);
+            emit EventsLib.SetMarketController(id, controller);
 
             if (enableDeleverage) {
                 deleverageEnabled[id] = true;
-                emit LidoBlueEventsLib.EnableDeleverage(id);
+                emit EventsLib.EnableDeleverage(id);
             }
         }
 
@@ -221,7 +218,7 @@ contract LidoBlue is ILidoBlue {
 
     /* SUPPLY MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function supply(
         MarketParams memory marketParams,
         uint256 assets,
@@ -262,7 +259,7 @@ contract LidoBlue is ILidoBlue {
         return (assets, shares);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function withdraw(
         MarketParams memory marketParams,
         uint256 assets,
@@ -307,7 +304,7 @@ contract LidoBlue is ILidoBlue {
 
     /* BORROW MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function borrow(
         MarketParams memory marketParams,
         uint256 assets,
@@ -351,7 +348,7 @@ contract LidoBlue is ILidoBlue {
         return (assets, shares);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function repay(
         MarketParams memory marketParams,
         uint256 assets,
@@ -395,7 +392,7 @@ contract LidoBlue is ILidoBlue {
 
     /* COLLATERAL MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes calldata data)
         external
         nonHookReentrant
@@ -425,7 +422,7 @@ contract LidoBlue is ILidoBlue {
         IERC20(marketParams.collateralToken).safeTransferFrom(msg.sender, address(this), assets);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
         nonHookReentrant
@@ -459,7 +456,7 @@ contract LidoBlue is ILidoBlue {
 
     /* LIQUIDATION */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function liquidate(
         MarketParams memory marketParams,
         address borrower,
@@ -553,26 +550,26 @@ contract LidoBlue is ILidoBlue {
     ) external nonHookReentrant returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(deleverageEnabled[id], LidoBlueErrorsLib.DELEVERAGE_DISABLED);
-        require(supplyShares != 0, LidoBlueErrorsLib.ZERO_SHARES);
+        require(deleverageEnabled[id], ErrorsLib.DELEVERAGE_DISABLED);
+        require(supplyShares != 0, ErrorsLib.ZERO_SHARES);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
         require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
         debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
+        require(debtCanceled > _availableLiquidity(id), ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        require(position[id][borrower].borrowShares != 0, LidoBlueErrorsLib.DELEVERAGE_NO_DEBT);
+        require(position[id][borrower].borrowShares != 0, ErrorsLib.DELEVERAGE_NO_DEBT);
 
         collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(collateralSeized != 0, LidoBlueErrorsLib.DELEVERAGE_SLICE_TOO_SMALL);
-        require(collateralSeized <= borrowerRawCollateral, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL);
+        require(collateralSeized != 0, ErrorsLib.DELEVERAGE_SLICE_TOO_SMALL);
+        require(collateralSeized <= borrowerRawCollateral, ErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL);
 
         uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(borrowSharesToBurn <= position[id][borrower].borrowShares, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_DEBT);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.DELEVERAGE_EXCEEDS_DEBT);
 
         _hook(
             id,
@@ -599,9 +596,7 @@ contract LidoBlue is ILidoBlue {
 
         position[id][borrower].collateral -= collateralSeized.toUint128();
 
-        emit LidoBlueEventsLib.Deleverage(
-            id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled
-        );
+        emit EventsLib.Deleverage(id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled);
 
         IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
     }
@@ -660,7 +655,7 @@ contract LidoBlue is ILidoBlue {
 
     /* INTEREST MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function accrueInterest(MarketParams memory marketParams) external nonHookReentrant {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);

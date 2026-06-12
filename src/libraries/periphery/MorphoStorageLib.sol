@@ -4,8 +4,7 @@ pragma solidity ^0.8.0;
 import {Id} from "../../interfaces/IMorpho.sol";
 
 /// @title MorphoStorageLib
-/// @author Morpho Labs
-/// @custom:contact security@morpho.org
+/// @author Morpho Labs. Modified by Lido.
 /// @notice Helper library exposing getters to access Morpho storage variables' slot.
 /// @dev This library is not used in Morpho itself and is intended to be used by integrators.
 library MorphoStorageLib {

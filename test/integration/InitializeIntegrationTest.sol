@@ -3,17 +3,17 @@ pragma solidity ^0.8.0;
 
 import "../BaseTest.sol";
 
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract InitializeIntegrationTest is BaseTest {
     function testCannotReinitializeProxy() public {
-        vm.expectRevert(bytes(LidoBlueErrorsLib.ALREADY_INITIALIZED));
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
         LidoBlue(address(morpho)).initialize(OWNER);
     }
 
     function testImplementationIsPetrified() public {
         LidoBlue impl = new LidoBlue();
-        vm.expectRevert(bytes(LidoBlueErrorsLib.ALREADY_INITIALIZED));
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
         impl.initialize(OWNER);
     }
 

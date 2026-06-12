@@ -11,6 +11,7 @@ Morpho Blue also offers a convenient developer experience with a singleton imple
 
 This repository (`morpho-lido-blue`) is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, adapted for the Lido Lending product and imported by the product repository as a subrepository.
 The core contract `src/Morpho.sol` is renamed to `src/LidoBlue.sol` and extended with optional per-market controllers, controller action hooks, a `deleverage` settlement primitive, and an upgradeable-proxy initializer.
+Unlike upstream, market creation is owner-gated in this fork (the description above applies to upstream Morpho Blue).
 
 Inherited Morpho Blue source files are used under `GPL-2.0-or-later`.
 Lido Lending modifications, the exact upstream fork point, and the preserved/changed assumptions are documented in [`FORK_NOTES.md`](./FORK_NOTES.md).
@@ -22,8 +23,8 @@ The protocol is described in detail in the [Morpho Blue Whitepaper](./morpho-blu
 ## Repository Structure
 
 [`LidoBlue.sol`](./src/LidoBlue.sol) contains most of the source code of the forked core contract.
-It relies on internal libraries in the [`src/libraries`](./src/libraries) subdirectory, including the fork-added `LidoBlueErrorsLib` and `LidoBlueEventsLib`.
-The fork's typed interfaces are [`ILidoBlue.sol`](./src/interfaces/ILidoBlue.sol) and [`ILidoBlueMarketController.sol`](./src/interfaces/ILidoBlueMarketController.sol).
+It relies on internal libraries in the [`src/libraries`](./src/libraries) subdirectory; the fork-added errors and events are appended in place to `ErrorsLib` and `EventsLib`.
+The fork's typed interfaces are [`ILidoBlue.sol`](./src/interfaces/ILidoBlue.sol) (fork-added members) and [`ILidoBlueMarketController.sol`](./src/interfaces/ILidoBlueMarketController.sol); fork-behavior annotations on inherited members live in place in [`IMorpho.sol`](./src/interfaces/IMorpho.sol).
 
 Libraries in the [`src/libraries/periphery`](./src/libraries/periphery) directory are not used by Morpho Blue.
 They are useful helpers that integrators can reuse or adapt to their own needs.
@@ -39,6 +40,10 @@ Compilation, testing and formatting with [forge](https://book.getfoundry.sh/gett
 ## Audits
 
 All audits are stored in the [audits](./audits/) folder.
+
+## Security
+
+Report vulnerabilities in this repository or its deployments per [SECURITY.md](./SECURITY.md) (to Lido, not to upstream Morpho Labs).
 
 ## License
 

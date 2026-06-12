@@ -5,7 +5,7 @@ import "../BaseTest.sol";
 
 import {IMorphoBase} from "../../src/interfaces/IMorpho.sol";
 import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 import {ReentrantControllerMock} from "../../src/mocks/ReentrantControllerMock.sol";
 
 /// @dev The controller hook runs under a transient reentrancy lock: while a hook executes, the nine
@@ -62,7 +62,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         loanToken.setBalance(address(this), 10e18);
 
         _armAndExpect(abi.encodeCall(IMorphoBase.supply, (dp, 1e18, 0, address(rc), hex"")));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
     }
 
@@ -71,7 +71,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.supply(dp, 100e18, 0, address(this), hex"");
 
         _armAndExpect(abi.encodeCall(IMorphoBase.withdraw, (dp, 1e18, 0, address(this), address(this))));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.withdraw(dp, 10e18, 0, address(this), address(this));
     }
 
@@ -82,7 +82,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.supplyCollateral(dp, 100e18, address(this), hex""); // maxBorrow = 80e18
 
         _armAndExpect(abi.encodeCall(IMorphoBase.borrow, (dp, 10e18, 0, address(this), address(this))));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.borrow(dp, 10e18, 0, address(this), address(this));
     }
 
@@ -94,7 +94,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.borrow(dp, 50e18, 0, address(this), address(this)); // debt 50e18
 
         _armAndExpect(abi.encodeCall(IMorphoBase.repay, (dp, 10e18, 0, address(this), hex"")));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.repay(dp, 10e18, 0, address(this), hex"");
     }
 
@@ -102,7 +102,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         collateralToken.setBalance(address(this), 10e18);
 
         _armAndExpect(abi.encodeCall(IMorphoBase.supplyCollateral, (dp, 1e18, address(rc), hex"")));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.supplyCollateral(dp, 10e18, address(this), hex"");
     }
 
@@ -111,7 +111,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.supplyCollateral(dp, 100e18, address(this), hex"");
 
         _armAndExpect(abi.encodeCall(IMorphoBase.withdrawCollateral, (dp, 1e18, address(this), address(this))));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.withdrawCollateral(dp, 10e18, address(this), address(this));
     }
 
@@ -127,7 +127,7 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         _armAndExpect(abi.encodeCall(IMorphoBase.liquidate, (dp, BORROWER, 10e18, 0, hex"")));
         loanToken.setBalance(address(this), 100e18);
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.liquidate(dp, BORROWER, 10e18, 0, hex"");
     }
 
@@ -136,7 +136,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         rc.arm(reentry);
         // The outer call has identical calldata, so the dispatch control expects two matching calls.
         vm.expectCall(address(morpho), reentry, 2);
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.accrueInterest(dp);
     }
 
@@ -152,7 +152,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
         uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
         _armAndExpect(abi.encodeCall(ILidoBlue.deleverage, (dp, slice, BORROWER, address(this), RECEIVER)));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         _lido().deleverage(dp, slice, BORROWER, address(this), RECEIVER);
     }
 
@@ -162,7 +162,7 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         // flashLoan dispatches no hook of its own but is still locked out while one is executing.
         _armAndExpect(abi.encodeCall(IMorphoBase.flashLoan, (address(loanToken), 1e18, hex"")));
-        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
     }
 

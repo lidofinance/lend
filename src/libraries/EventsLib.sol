@@ -4,8 +4,7 @@ pragma solidity ^0.8.0;
 import {Id, MarketParams} from "../interfaces/IMorpho.sol";
 
 /// @title EventsLib
-/// @author Morpho Labs
-/// @custom:contact security@morpho.org
+/// @author Morpho Labs. Modified by Lido.
 /// @notice Library exposing events.
 library EventsLib {
     /// @notice Emitted when setting a new owner.
@@ -147,4 +146,33 @@ library EventsLib {
     /// @param interest The amount of interest accrued.
     /// @param feeShares The amount of shares minted as fee.
     event AccrueInterest(Id indexed id, uint256 prevBorrowRate, uint256 interest, uint256 feeShares);
+
+    /* FORK-ADDED EVENTS */
+
+    /// @notice Emitted when a market's controller is bound at creation.
+    /// @param id The market id.
+    /// @param controller The bound controller.
+    event SetMarketController(Id indexed id, address indexed controller);
+
+    /// @notice Emitted when the deleverage extension is enabled for a market at creation.
+    /// @param id The market id.
+    event EnableDeleverage(Id indexed id);
+
+    /// @notice Emitted on a successful `deleverage`.
+    /// @param id The market id.
+    /// @param caller The caller of `deleverage`.
+    /// @param onBehalf The supply-side account whose shares are burned.
+    /// @param borrower The borrower whose debt and collateral are reduced.
+    /// @param supplyShares The supply shares burned from `onBehalf`.
+    /// @param collateralSeized The collateral seized from `borrower` and sent to the receiver.
+    /// @param debtCanceled The borrow assets canceled from `borrower`.
+    event Deleverage(
+        Id indexed id,
+        address indexed caller,
+        address indexed onBehalf,
+        address borrower,
+        uint256 supplyShares,
+        uint256 collateralSeized,
+        uint256 debtCanceled
+    );
 }

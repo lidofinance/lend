@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 import "../BaseTestWithController.sol";
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract ControllerIntegrationTest is BaseTestWithController {
     using MorphoLib for IMorpho;
@@ -21,7 +21,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         MarketParams memory params = marketParams; // enabled irm/lltv; fresh oracle => uncreated id
         params.oracle = makeAddr("FreshOracle");
 
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER));
         vm.prank(OWNER);
         ILidoBlue(address(morpho)).createMarket(params, address(0), true);
     }
@@ -32,7 +32,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         params.oracle = makeAddr("FreshOracle");
 
         // `controller` is bound to `id`, not to `params.id()`.
-        vm.expectRevert(bytes(LidoBlueErrorsLib.CONTROLLER_MISMATCH));
+        vm.expectRevert(bytes(ErrorsLib.CONTROLLER_MISMATCH));
         vm.prank(OWNER);
         ILidoBlue(address(morpho)).createMarket(params, address(controller), false);
     }

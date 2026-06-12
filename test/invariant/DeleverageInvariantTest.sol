@@ -6,7 +6,7 @@ import "../InvariantTest.sol";
 import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
 import {EnforcingControllerMock} from "../../src/mocks/EnforcingControllerMock.sol";
 import {OracleMock} from "../../src/mocks/OracleMock.sol";
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 // Invariant suite for `deleverage` on one controller-bound market with two borrowers. The market is kept
 // near zero free liquidity (LENDER supplies, a borrower borrows the same) so the liquidity gate clears;
@@ -226,7 +226,7 @@ contract DeleverageInvariantTest is InvariantTest {
         // debtCanceled ~ a quarter of supply < avail, so the gate must block.
         uint256 sliceShares = morpho.supplyShares(cId, LENDER) / 4;
         vm.prank(LENDER);
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
+        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
         ILidoBlue(address(morpho)).deleverage(cParams, sliceShares, CB, LENDER, LENDER);
     }
 
