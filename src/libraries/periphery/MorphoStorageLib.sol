@@ -22,7 +22,7 @@ library MorphoStorageLib {
     // Fork-added slots (LidoBlue), appended after upstream storage; see FORK_NOTES.md "Storage layout".
     uint256 internal constant MARKET_CONTROLLER_SLOT = 9;
     uint256 internal constant DELEVERAGE_ENABLED_SLOT = 10;
-    // Slot 11 holds the internal `_initialized` flag (proxy init): not integrator-facing, so no read helper.
+    uint256 internal constant INITIALIZED_SLOT = 11;
 
     /* SLOT OFFSETS */
 
@@ -117,5 +117,9 @@ library MorphoStorageLib {
 
     function deleverageEnabledSlot(Id id) internal pure returns (bytes32) {
         return keccak256(abi.encode(id, DELEVERAGE_ENABLED_SLOT));
+    }
+
+    function initializedSlot() internal pure returns (bytes32) {
+        return bytes32(INITIALIZED_SLOT);
     }
 }

@@ -120,9 +120,10 @@ contract MorphoStorageLibTest is BaseTest {
         vm.prank(OWNER);
         ILidoBlue(address(morpho)).createMarket(cp, controller, true);
 
-        bytes32[] memory slots = new bytes32[](2);
+        bytes32[] memory slots = new bytes32[](3);
         slots[0] = MorphoStorageLib.marketControllerSlot(cid);
         slots[1] = MorphoStorageLib.deleverageEnabledSlot(cid);
+        slots[2] = MorphoStorageLib.initializedSlot();
 
         bytes32[] memory values = morpho.extSloads(slots);
 
@@ -130,5 +131,7 @@ contract MorphoStorageLibTest is BaseTest {
         assertEq(abi.decode(abi.encode(values[0]), (address)), LidoBlue(address(morpho)).marketController(cid));
         assertEq(abi.decode(abi.encode(values[1]), (bool)), true);
         assertEq(abi.decode(abi.encode(values[1]), (bool)), LidoBlue(address(morpho)).deleverageEnabled(cid));
+        assertEq(abi.decode(abi.encode(values[2]), (bool)), true);
+        assertEq(abi.decode(abi.encode(values[2]), (bool)), LidoBlue(address(morpho)).initialized());
     }
 }

@@ -79,7 +79,7 @@ library ErrorsLib {
 
     /* FORK-ADDED ERRORS */
 
-    /// @notice Thrown when a controller is bound whose `MARKET_ID` does not match the market.
+    /// @notice Thrown when a controller is bound whose `marketId` does not match the market.
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
 
     /// @notice Thrown when `deleverage` is called on a market that did not opt into it.

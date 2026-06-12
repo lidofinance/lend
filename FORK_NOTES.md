@@ -40,7 +40,7 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 
 - `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and every inherited member whose fork behavior differs carries a `Warning` annotation.
   There are no other signature changes; a member without a fork `Warning` behaves exactly as upstream.
-- `src/interfaces/ILidoBlue.sol` declares only the fork-added members (`initialize`, the `createMarket` overload, `deleverage`, `marketController`, `deleverageEnabled`); `LidoBlue is ILidoBlue is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
+- `src/interfaces/ILidoBlue.sol` declares only the fork-added members (`initialize`, `initialized`, the `createMarket` overload, `deleverage`, `marketController`, `deleverageEnabled`); `LidoBlue is ILidoBlue is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
 - Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol` (`/* FORK-ADDED */` sections); `MorphoStorageLib.sol` exposes the fork-added storage slots.
 - ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
 
@@ -60,10 +60,10 @@ slot  7  nonce              mapping(address => uint256)
 slot  8  idToMarketParams   mapping(Id => MarketParams)
 slot  9  marketController   mapping(Id => address)                         (fork)
 slot 10  deleverageEnabled  mapping(Id => bool)                            (fork)
-slot 11  _initialized       bool                                          (fork)
+slot 11  initialized        bool                                           (fork)
 ```
 
-A new field must be appended after slot 11 (or packed alongside `_initialized`); reordering or inserting fields breaks proxy storage on upgrade.
+A new field must be appended after slot 11 (or packed alongside `initialized`); reordering or inserting fields breaks proxy storage on upgrade.
 The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 
 ## Compatibility

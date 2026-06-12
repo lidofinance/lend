@@ -30,16 +30,8 @@ contract EnforcingControllerMock is ILidoBlueMarketController {
         _oracle = IOracle(oracle_);
     }
 
-    function MARKET_ID() external view returns (Id) {
+    function marketId() external view returns (Id) {
         return Id.wrap(_marketId);
-    }
-
-    function nextDeleverageCut() external pure returns (address, uint256) {
-        return (address(0), 0);
-    }
-
-    function allowedSliceFor(address) external pure returns (uint256) {
-        return type(uint256).max;
     }
 
     function on(Id id, HookEvent hookEvent, bytes calldata data) external view {

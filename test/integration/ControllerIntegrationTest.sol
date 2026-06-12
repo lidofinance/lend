@@ -27,7 +27,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         ILidoBlue(address(morpho)).createMarket(params, address(0), enableDeleverage);
     }
 
-    /// @notice A controller may only be bound to the market whose id it declares via `MARKET_ID`.
+    /// @notice A controller may only be bound to the market whose id it declares via `marketId`.
     function testCreateMarketRevertsOnControllerMismatch() public {
         MarketParams memory params = marketParams; // distinct id from the controlled market
         params.oracle = makeAddr("FreshOracle");

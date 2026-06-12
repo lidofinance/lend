@@ -25,16 +25,8 @@ contract ReentrantControllerMock is ILidoBlueMarketController {
         reentryCall = data;
     }
 
-    function MARKET_ID() external view returns (Id) {
+    function marketId() external view returns (Id) {
         return Id.wrap(_marketId);
-    }
-
-    function nextDeleverageCut() external pure returns (address, uint256) {
-        return (address(0), 0);
-    }
-
-    function allowedSliceFor(address) external pure returns (uint256) {
-        return type(uint256).max;
     }
 
     /// @dev Accepts flash loans, so an armed `flashLoan` reentry is valid on its own (repayment

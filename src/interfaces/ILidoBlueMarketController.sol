@@ -5,10 +5,10 @@ import {Id} from "./IMorpho.sol";
 
 /// @title ILidoBlueMarketController
 /// @author Lido.
-/// @notice The market controller's interface. The core dispatches every action through a single
-/// `on(id, e, data)` entrypoint (HookEvent order and struct layouts must match the core so the abi-encoded
-/// hook payloads stay compatible). It also declares read views (`nextDeleverageCut`, `allowedSliceFor`) for
-/// consumers that drive deleverage.
+/// @notice The market controller's interface — the full coupling between the core and a controller:
+/// `marketId()`, checked when the controller is bound at market creation, and the `on(id, e, data)` hook
+/// entrypoint, through which the core dispatches every action (HookEvent order and struct layouts must
+/// match the core so the abi-encoded hook payloads stay compatible).
 interface ILidoBlueMarketController {
     enum HookEvent {
         Supply,
@@ -86,14 +86,7 @@ interface ILidoBlueMarketController {
     }
 
     /// @notice The single market id this controller manages. Checked at market binding.
-    function MARKET_ID() external view returns (Id);
-
-    /// @notice The next borrower the controller designates as eligible for a deleverage cut, and the maximum
-    /// loan-asset slice allowed against it. `borrower` is the zero address when no borrower is eligible.
-    function nextDeleverageCut() external view returns (address borrower, uint256 sliceAssets);
-
-    /// @notice Maximum loan-asset slice the policy allows for a single deleverage cut against `borrower`.
-    function allowedSliceFor(address borrower) external view returns (uint256);
+    function marketId() external view returns (Id);
 
     /// @notice Strict action callback. Reverts to abort the calling action.
     function on(Id id, HookEvent hookEvent, bytes calldata data) external;

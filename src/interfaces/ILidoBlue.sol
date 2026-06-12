@@ -13,6 +13,11 @@ import {Id, IMorphoStaticTyping, MarketParams} from "./IMorpho.sol";
 /// upstream `Morpho is IMorphoStaticTyping`. Where a library wants the struct-returning `IMorpho` (e.g.
 /// `MorphoBalancesLib`), cast the same core address to `IMorpho`; both views are ABI-identical.
 interface ILidoBlue is IMorphoStaticTyping {
+    /// @notice Whether the contract is initialized.
+    /// @dev The implementation is petrified to `true` by its constructor; a proxy starts at `false`
+    /// and flips on its one-shot `initialize` call.
+    function initialized() external view returns (bool);
+
     /// @notice One-shot initializer setting `newOwner` as `owner`. Called by the proxy at deploy time.
     /// @dev Fork-added for the upgradeable-proxy deployment: the implementation is petrified by its
     /// constructor, so only a proxy's storage can be initialized, and only once.

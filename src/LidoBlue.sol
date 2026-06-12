@@ -49,6 +49,16 @@ contract LidoBlue is ILidoBlue {
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
 
+    /* DOMAIN SEPARATOR */
+
+    /// @inheritdoc IMorphoBase
+    /// @dev Upstream declares this as an immutable here, computed once in the constructor. The fork
+    ///      recomputes it from `address(this)` on every call so it resolves to the proxy address
+    ///      under delegatecall, instead of being baked into the implementation's bytecode.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+    }
+
     /* STORAGE */
 
     /// @inheritdoc IMorphoBase
@@ -76,35 +86,25 @@ contract LidoBlue is ILidoBlue {
     mapping(Id => address) public marketController;
     /// @inheritdoc ILidoBlue
     mapping(Id => bool) public deleverageEnabled;
+    /// @inheritdoc ILidoBlue
+    bool public initialized;
 
     /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
     ///      persistent slot, so the upgrade-safe layout is unaffected.
     bool internal transient _hookInProgress;
 
-    /// @inheritdoc IMorphoBase
-    /// @dev Computed from `address(this)` at call time so it resolves to the proxy address under
-    ///      delegatecall, instead of being baked into the impl's bytecode like the upstream
-    ///      immutable would be.
-    function DOMAIN_SEPARATOR() public view returns (bytes32) {
-        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
-    }
-
     /* INITIALIZER */
-
-    /// @dev One-shot initializer flag. Petrified to `true` by the impl constructor; proxies start
-    ///      at `false` and flip on the first `initialize` call.
-    bool internal _initialized;
 
     /// @dev Petrifies the implementation; only a proxy can call `initialize`.
     constructor() {
-        _initialized = true;
+        initialized = true;
     }
 
     /// @inheritdoc ILidoBlue
     function initialize(address newOwner) external {
-        require(!_initialized, ErrorsLib.ALREADY_INITIALIZED);
+        require(!initialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-        _initialized = true;
+        initialized = true;
         owner = newOwner;
         emit EventsLib.SetOwner(newOwner);
     }
@@ -193,7 +193,7 @@ contract LidoBlue is ILidoBlue {
 
         if (controller != address(0)) {
             require(
-                Id.unwrap(ILidoBlueMarketController(controller).MARKET_ID()) == Id.unwrap(id),
+                Id.unwrap(ILidoBlueMarketController(controller).marketId()) == Id.unwrap(id),
                 ErrorsLib.CONTROLLER_MISMATCH
             );
             marketController[id] = controller;
