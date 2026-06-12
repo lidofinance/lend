@@ -8,8 +8,9 @@ import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 import {ReentrantControllerMock} from "../../src/mocks/ReentrantControllerMock.sol";
 
-/// @dev The controller hook runs under a transient reentrancy lock: while a hook executes, the nine
-///      hooked entrypoints and `flashLoan` revert with HOOK_REENTRANCY. Each test arms a reentrant
+/// @dev The controller hook runs under a transient reentrancy lock checked inside `_hook`: while a
+///      hook executes, reentering any of the nine hooked entrypoints reverts with HOOK_REENTRANCY
+///      (`flashLoan` dispatches no hook and is deliberately not locked). Each test arms a reentrant
 ///      call that would be valid on its own (positions pre-funded; the controller funded, approved,
 ///      and authorized), so only the lock can stop it — and arms it into the same entrypoint under
 ///      test, so every entrypoint's lock check is pinned individually.
@@ -156,14 +157,30 @@ contract ReentrancyIntegrationTest is BaseTest {
         _lido().deleverage(dp, slice, BORROWER, address(this), RECEIVER);
     }
 
-    function testReentrancyFlashLoanBlocked() public {
+    function testHooklessMarketActionAllowedDuringHook() public {
         loanToken.setBalance(address(this), 110e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
 
-        // flashLoan dispatches no hook of its own but is still locked out while one is executing.
-        _armAndExpect(abi.encodeCall(IMorphoBase.flashLoan, (address(loanToken), 1e18, hex"")));
-        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
+        // The gate is scoped to controlled markets: an action on a market with no controller is never
+        // gated, even mid-hook, and behaves exactly as upstream.
+        _armAndExpect(abi.encodeCall(IMorphoBase.supply, (marketParams, 1e18, 0, address(rc), hex"")));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
+
+        assertEq(morpho.supplyShares(id, address(rc)), 1e18 * SharesMathLib.VIRTUAL_SHARES, "hookless supply applied");
+        assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "outer supply applied");
+    }
+
+    function testFlashLoanAllowedDuringHook() public {
+        loanToken.setBalance(address(this), 110e18);
+        morpho.supply(dp, 100e18, 0, address(this), hex"");
+
+        // flashLoan dispatches no hook and touches no market or position state, so it is deliberately
+        // not locked: the armed reentry succeeds mid-hook and the outer supply completes.
+        _armAndExpect(abi.encodeCall(IMorphoBase.flashLoan, (address(loanToken), 1e18, hex"")));
+        morpho.supply(dp, 10e18, 0, address(this), hex"");
+
+        assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "supply applied");
+        assertEq(loanToken.balanceOf(address(morpho)), 110e18, "flash loan netted to zero");
     }
 
     function testCallbackAfterHookCanReenter() public {

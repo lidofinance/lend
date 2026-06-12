@@ -31,8 +31,8 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
   The fork-added overload `createMarket(params, controller, enableDeleverage)` atomically binds an optional per-market controller (checked against its `MARKET_ID`) and a `deleverage` opt-in; both are immutable after creation.
 - Fork market parameters live in side mappings, never in `MarketParams`: its shape defines market id derivation and must stay upstream-exact.
 - Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `deleverage`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
-  The hook runs under a transient lock: the nine actions and `flashLoan` revert with `HOOK_REENTRANCY` while a hook is in flight; the lock is released before state writes and Morpho callbacks, so upstream callback patterns are unaffected.
-  `setAuthorization` / `setAuthorizationWithSig` are deliberately unlocked: the outer call's authorization check precedes the hook.
+  While a controller hook is executing, the hooked actions revert with `HOOK_REENTRANCY`; the check lives in the hook dispatch, so a market without a controller is never affected.
+  The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working; `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
 - `deleverage(...)`: fork-added settlement primitive that cancels a borrower's debt against a lender's supply shares when ordinary withdraw liquidity is insufficient; per-market opt-in.
 
 ## Interfaces and libraries

@@ -117,12 +117,6 @@ contract LidoBlue is ILidoBlue {
         _;
     }
 
-    /// @dev Reverts if a controller hook is currently executing.
-    modifier nonHookReentrant() {
-        require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
-        _;
-    }
-
     /* ONLY OWNER FUNCTIONS */
 
     /// @inheritdoc IMorphoBase
@@ -225,7 +219,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -266,7 +260,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -311,7 +305,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -355,7 +349,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -395,7 +389,6 @@ contract LidoBlue is ILidoBlue {
     /// @inheritdoc IMorphoBase
     function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes calldata data)
         external
-        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -425,7 +418,6 @@ contract LidoBlue is ILidoBlue {
     /// @inheritdoc IMorphoBase
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
-        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -463,7 +455,7 @@ contract LidoBlue is ILidoBlue {
         uint256 seizedAssets,
         uint256 repaidShares,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(seizedAssets, repaidShares), ErrorsLib.INCONSISTENT_INPUT);
@@ -547,7 +539,7 @@ contract LidoBlue is ILidoBlue {
         address borrower,
         address onBehalf,
         address receiver
-    ) external nonHookReentrant returns (uint256 collateralSeized, uint256 debtCanceled) {
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(deleverageEnabled[id], ErrorsLib.DELEVERAGE_DISABLED);
@@ -604,7 +596,7 @@ contract LidoBlue is ILidoBlue {
     /* FLASH LOANS */
 
     /// @inheritdoc IMorphoBase
-    function flashLoan(address token, uint256 assets, bytes calldata data) external nonHookReentrant {
+    function flashLoan(address token, uint256 assets, bytes calldata data) external {
         require(assets != 0, ErrorsLib.ZERO_ASSETS);
 
         emit EventsLib.FlashLoan(msg.sender, token, assets);
@@ -656,7 +648,7 @@ contract LidoBlue is ILidoBlue {
     /* INTEREST MANAGEMENT */
 
     /// @inheritdoc IMorphoBase
-    function accrueInterest(MarketParams memory marketParams) external nonHookReentrant {
+    function accrueInterest(MarketParams memory marketParams) external {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
 
@@ -732,11 +724,15 @@ contract LidoBlue is ILidoBlue {
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
     ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
-    /// @dev The controller call runs under the transient lock; the lock is released before the
-    ///      calling function writes state and runs Morpho callbacks.
+    /// @dev Doubles as the reentrancy gate, scoped to where hooks exist: on a market with a
+    ///      controller, entering while another controller hook is in flight reverts; a market with
+    ///      no controller is never gated. Nested hooks are impossible: a controlled market reverts
+    ///      here before dispatching its own hook. The lock is released before the calling function
+    ///      writes state and runs Morpho callbacks.
     function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
         if (controller != address(0)) {
+            require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
             _hookInProgress = true;
             ILidoBlueMarketController(controller).on(id, e, data);
             _hookInProgress = false;
