@@ -84,7 +84,11 @@ The proxy (an `OssifiableProxy`) lives in the consumer repository, not here.
 
 - Every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `deleverage`) dispatches the matching hook on the market's bound controller via the internal `_hook`.
   The controller may revert to reject the action.
+- The hook executes under a transient reentrancy lock (`_hookInProgress`): while the controller call is in flight, the nine hooked actions and `flashLoan` revert with `HOOK_REENTRANCY`.
+  The lock is released before the calling function writes its state and runs Morpho callbacks, so upstream callback patterns (e.g. a `supplyCollateral` callback that borrows) are unaffected.
+  `setAuthorization` and `setAuthorizationWithSig` are deliberately not locked: the outer call's authorization check runs before the hook, so a mid-hook authorization change cannot affect the in-flight action.
 - `flashLoan` is the deliberate exception: it dispatches no hook, since it nets to zero within the call and writes no position or market state.
+  It is still locked out while another action's hook executes.
 - A market with no controller behaves exactly as upstream.
 
 ### Deleverage
@@ -122,6 +126,7 @@ slot 11  _initialized       bool                                          (fork)
 
 A new field must be appended after slot 11 (or packed into slot 11 alongside `_initialized`).
 Reordering or inserting fields breaks proxy storage on upgrade.
+The reentrancy lock `_hookInProgress` is a `transient` variable: it lives in transient storage and occupies no persistent slot, so it does not appear in (or constrain) the layout above.
 
 ## Preserved upstream assumptions
 
@@ -130,14 +135,15 @@ Reordering or inserting fields breaks proxy storage on upgrade.
 - The `isIrmEnabled` / `isLltvEnabled` allowlists remain monotonic (enable-only), with views and storage slots preserved.
 - `LidoBlue is IMorphoStaticTyping`, so Morpho-style vaults and tooling can treat the core as a drop-in for the user-facing surface (supply/borrow/etc. and all views).
   The admin surface is not a drop-in: `enableIrm` / `enableLltv` are gone and `createMarket` is `onlyOwner`.
-- The Solidity version (`0.8.19`) and compiler settings are inherited from upstream.
-  Keep them in sync to avoid compiler/optimizer drift.
 
 ## Removed or changed upstream assumptions
 
 - Market creation is `onlyOwner` rather than permissionless.
 - The standalone `enableIrm` / `enableLltv` methods are removed; activation moved into `createMarket` (see "Market creation").
   `onlyOwner` on `createMarket` is now the only gate on market creation.
+- The Solidity version is bumped from upstream's `0.8.19` to `0.8.30` with `evm_version = "cancun"` (pinned in `foundry.toml`): the hook reentrancy lock uses transient storage, which needs Cancun.
+  Upstream syncs land under a different compiler than they were audited with, and the core cannot be deployed to a chain without Cancun support.
+- Reentering a locked entrypoint (the nine hooked actions and `flashLoan`) while a controller hook executes is rejected (see "Controller hooks"); upstream has no such lock (and no hooks).
 - The core is no longer immutable.
   It runs behind an upgradeable proxy, so the upstream "enable-only, never disable" and fixed-rules guarantees hold only as strongly as the proxy's upgrade governance, until the proxy is ossified.
 
@@ -151,6 +157,7 @@ Reordering or inserting fields breaks proxy storage on upgrade.
 - Upstream Certora specs are inherited as files but have not been re-verified against the modified core and may currently fail.
   Lido-specific specs for the controller-hook and `deleverage` paths are not yet added (TODO).
   The harnesses are updated to the renamed core (so the specs compile), but the Certora CI workflow is set to manual-only (`workflow_dispatch`) until the fork specs pass; restore its `push`/`pull_request` triggers then.
+  The Certora confs (and the workflow's solc install) still pin `solc-0.8.19`; bump them to `0.8.30`/Cancun when re-enabling.
 
 ## Syncing with upstream
 

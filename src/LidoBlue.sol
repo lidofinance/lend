@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.30;
 
 import {
     Id,
@@ -79,6 +79,10 @@ contract LidoBlue is ILidoBlue {
     /// @inheritdoc ILidoBlue
     mapping(Id => bool) public deleverageEnabled;
 
+    /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
+    ///      persistent slot, so the upgrade-safe layout is unaffected.
+    bool internal transient _hookInProgress;
+
     /// @inheritdoc IMorphoBase
     /// @dev Computed from `address(this)` at call time so it resolves to the proxy address under
     ///      delegatecall, instead of being baked into the impl's bytecode like the upstream
@@ -113,6 +117,12 @@ contract LidoBlue is ILidoBlue {
     /// @dev Reverts if the caller is not the owner.
     modifier onlyOwner() {
         require(msg.sender == owner, ErrorsLib.NOT_OWNER);
+        _;
+    }
+
+    /// @dev Reverts if a controller hook is currently executing.
+    modifier nonHookReentrant() {
+        require(!_hookInProgress, LidoBlueErrorsLib.HOOK_REENTRANCY);
         _;
     }
 
@@ -218,7 +228,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external returns (uint256, uint256) {
+    ) external nonHookReentrant returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -259,7 +269,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external returns (uint256, uint256) {
+    ) external nonHookReentrant returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -304,7 +314,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external returns (uint256, uint256) {
+    ) external nonHookReentrant returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -348,7 +358,7 @@ contract LidoBlue is ILidoBlue {
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external returns (uint256, uint256) {
+    ) external nonHookReentrant returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -388,6 +398,7 @@ contract LidoBlue is ILidoBlue {
     /// @inheritdoc ILidoBlue
     function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes calldata data)
         external
+        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -417,6 +428,7 @@ contract LidoBlue is ILidoBlue {
     /// @inheritdoc ILidoBlue
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
+        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -454,7 +466,7 @@ contract LidoBlue is ILidoBlue {
         uint256 seizedAssets,
         uint256 repaidShares,
         bytes calldata data
-    ) external returns (uint256, uint256) {
+    ) external nonHookReentrant returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(seizedAssets, repaidShares), ErrorsLib.INCONSISTENT_INPUT);
@@ -538,7 +550,7 @@ contract LidoBlue is ILidoBlue {
         address borrower,
         address onBehalf,
         address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+    ) external nonHookReentrant returns (uint256 collateralSeized, uint256 debtCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(deleverageEnabled[id], LidoBlueErrorsLib.DELEVERAGE_DISABLED);
@@ -597,7 +609,7 @@ contract LidoBlue is ILidoBlue {
     /* FLASH LOANS */
 
     /// @inheritdoc IMorphoBase
-    function flashLoan(address token, uint256 assets, bytes calldata data) external {
+    function flashLoan(address token, uint256 assets, bytes calldata data) external nonHookReentrant {
         require(assets != 0, ErrorsLib.ZERO_ASSETS);
 
         emit EventsLib.FlashLoan(msg.sender, token, assets);
@@ -649,7 +661,7 @@ contract LidoBlue is ILidoBlue {
     /* INTEREST MANAGEMENT */
 
     /// @inheritdoc ILidoBlue
-    function accrueInterest(MarketParams memory marketParams) external {
+    function accrueInterest(MarketParams memory marketParams) external nonHookReentrant {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
 
@@ -725,9 +737,15 @@ contract LidoBlue is ILidoBlue {
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
     ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
+    /// @dev The controller call runs under the transient lock; the lock is released before the
+    ///      calling function writes state and runs Morpho callbacks.
     function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
-        if (controller != address(0)) ILidoBlueMarketController(controller).on(id, e, data);
+        if (controller != address(0)) {
+            _hookInProgress = true;
+            ILidoBlueMarketController(controller).on(id, e, data);
+            _hookInProgress = false;
+        }
     }
 
     /// @dev Returns the market's loan assets not currently borrowed. Does not include interest accrued
