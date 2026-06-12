@@ -138,25 +138,6 @@ contract LidoBlue is ILidoBlue {
     }
 
     /// @inheritdoc IMorphoBase
-    function enableIrm(address irm) external onlyOwner {
-        require(!isIrmEnabled[irm], ErrorsLib.ALREADY_SET);
-
-        isIrmEnabled[irm] = true;
-
-        emit EventsLib.EnableIrm(irm);
-    }
-
-    /// @inheritdoc IMorphoBase
-    function enableLltv(uint256 lltv) external onlyOwner {
-        require(!isLltvEnabled[lltv], ErrorsLib.ALREADY_SET);
-        require(lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
-
-        isLltvEnabled[lltv] = true;
-
-        emit EventsLib.EnableLltv(lltv);
-    }
-
-    /// @inheritdoc IMorphoBase
     function setFee(MarketParams memory marketParams, uint256 newFee) external onlyOwner {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -197,13 +178,22 @@ contract LidoBlue is ILidoBlue {
     }
 
     /// @dev Implements both `createMarket` overloads. The `controller` and deleverage opt-in cannot be
-    ///      changed after creation.
+    ///      changed after creation. Marks the market's `irm` and `lltv` as enabled on first use: the
+    ///      standalone `enableIrm`/`enableLltv` are removed in this fork since `createMarket` is `onlyOwner`.
     function _createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) internal {
         Id id = marketParams.id();
-        require(isIrmEnabled[marketParams.irm], ErrorsLib.IRM_NOT_ENABLED);
-        require(isLltvEnabled[marketParams.lltv], ErrorsLib.LLTV_NOT_ENABLED);
+        require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
         require(controller != address(0) || !enableDeleverage, LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
+
+        if (!isIrmEnabled[marketParams.irm]) {
+            isIrmEnabled[marketParams.irm] = true;
+            emit EventsLib.EnableIrm(marketParams.irm);
+        }
+        if (!isLltvEnabled[marketParams.lltv]) {
+            isLltvEnabled[marketParams.lltv] = true;
+            emit EventsLib.EnableLltv(marketParams.lltv);
+        }
 
         // Safe "unchecked" cast.
         market[id].lastUpdate = uint128(block.timestamp);

@@ -75,6 +75,10 @@ The proxy (an `OssifiableProxy`) lives in the consumer repository, not here.
   Upstream `createMarket` is permissionless.
 - The overload atomically binds an optional per-market `controller` (checked against its `MARKET_ID`) and a per-market `deleverage` opt-in.
   Both are immutable for the life of the market.
+- The standalone `enableIrm` / `enableLltv` are removed — from the core and from `IMorphoBase` in `src/interfaces/IMorpho.sol` (the one fork change to an inherited file).
+  With `createMarket` already `onlyOwner`, a separate owner-gated allowlist step was redundant.
+- `_createMarket` validates `lltv < WAD` and marks the market's `irm` and `lltv` as enabled on first use, emitting the upstream `EnableIrm` / `EnableLltv` events.
+  The `isIrmEnabled` / `isLltvEnabled` views and their storage slots are preserved; "enabled" now means "used by some created market".
 
 ### Controller hooks
 
@@ -128,12 +132,15 @@ The reentrancy lock `_hookInProgress` is a `transient` variable: it lives in tra
 
 - `MarketParams`, `Position`, and `Market` shapes and market id derivation are unchanged.
 - `onBehalf` and authorization semantics are unchanged.
-- `enableIrm` / `enableLltv` (monotonic, enable-only allowlists) are unchanged.
-- `LidoBlue is IMorphoStaticTyping`, so Morpho-style vaults and tooling can treat the core as a drop-in.
+- The `isIrmEnabled` / `isLltvEnabled` allowlists remain monotonic (enable-only), with views and storage slots preserved.
+- `LidoBlue is IMorphoStaticTyping`, so Morpho-style vaults and tooling can treat the core as a drop-in for the user-facing surface (supply/borrow/etc. and all views).
+  The admin surface is not a drop-in: `enableIrm` / `enableLltv` are gone and `createMarket` is `onlyOwner`.
 
 ## Removed or changed upstream assumptions
 
 - Market creation is `onlyOwner` rather than permissionless.
+- The standalone `enableIrm` / `enableLltv` methods are removed; activation moved into `createMarket` (see "Market creation").
+  `onlyOwner` on `createMarket` is now the only gate on market creation.
 - The Solidity version is bumped from upstream's `0.8.19` to `0.8.30` with `evm_version = "cancun"` (pinned in `foundry.toml`): the hook reentrancy lock uses transient storage, which needs Cancun.
   Upstream syncs land under a different compiler than they were audited with, and the core cannot be deployed to a chain without Cancun support.
 - Reentering a locked entrypoint (the nine hooked actions and `flashLoan`) while a controller hook executes is rejected (see "Controller hooks"); upstream has no such lock (and no hooks).
@@ -155,7 +162,7 @@ The reentrancy lock `_hookInProgress` is a `transient` variable: it lives in tra
 ## Syncing with upstream
 
 The fork is intentionally narrow, so upstream updates re-apply with minimal conflict.
-All core changes live in `src/LidoBlue.sol`, and everything else fork-added is a new file (see "Reproducing the diff").
+All core changes live in `src/LidoBlue.sol` plus a two-function removal in `src/interfaces/IMorpho.sol`; everything else fork-added is a new file (see "Reproducing the diff").
 
 To pull an upstream update:
 

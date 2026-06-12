@@ -3,6 +3,8 @@ pragma solidity ^0.8.0;
 
 import "../BaseTest.sol";
 
+import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+
 contract OnlyOwnerIntegrationTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
@@ -45,66 +47,22 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         assertEq(morpho.owner(), newOwner, "owner is not set");
     }
 
-    function testEnableIrmWhenNotOwner(address addressFuzz, address irmFuzz) public {
+    function testCreateMarketWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz) public {
         vm.assume(addressFuzz != OWNER);
-        vm.assume(irmFuzz != address(irm));
 
         vm.prank(addressFuzz);
         vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        morpho.enableIrm(irmFuzz);
+        morpho.createMarket(marketParamsFuzz);
     }
 
-    function testEnableIrmAlreadySet() public {
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
-        morpho.enableIrm(address(irm));
-    }
-
-    function testEnableIrm(address irmFuzz) public {
-        vm.assume(!morpho.isIrmEnabled(irmFuzz));
-
-        vm.prank(OWNER);
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.EnableIrm(irmFuzz);
-        morpho.enableIrm(irmFuzz);
-
-        assertTrue(morpho.isIrmEnabled(irmFuzz), "IRM is not enabled");
-    }
-
-    function testEnableLltvWhenNotOwner(address addressFuzz, uint256 lltvFuzz) public {
+    function testCreateMarketWithControllerWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz)
+        public
+    {
         vm.assume(addressFuzz != OWNER);
-        vm.assume(lltvFuzz != marketParams.lltv);
 
         vm.prank(addressFuzz);
         vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        morpho.enableLltv(lltvFuzz);
-    }
-
-    function testEnableLltvAlreadySet() public {
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
-        morpho.enableLltv(marketParams.lltv);
-    }
-
-    function testEnableTooHighLltv(uint256 lltv) public {
-        lltv = bound(lltv, WAD, type(uint256).max);
-
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.MAX_LLTV_EXCEEDED));
-        morpho.enableLltv(lltv);
-    }
-
-    function testEnableLltv(uint256 lltvFuzz) public {
-        lltvFuzz = _boundValidLltv(lltvFuzz);
-
-        vm.assume(!morpho.isLltvEnabled(lltvFuzz));
-
-        vm.prank(OWNER);
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.EnableLltv(lltvFuzz);
-        morpho.enableLltv(lltvFuzz);
-
-        assertTrue(morpho.isLltvEnabled(lltvFuzz), "LLTV is not enabled");
+        ILidoBlue(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
     }
 
     function testSetFeeWhenNotOwner(address addressFuzz, uint256 feeFuzz) public {
