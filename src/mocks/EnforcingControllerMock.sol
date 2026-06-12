@@ -11,7 +11,7 @@ import {SharesMathLib} from "../libraries/SharesMathLib.sol";
 import {MathLib} from "../libraries/MathLib.sol";
 
 /// @title EnforcingControllerMock
-/// @notice Controller that permits a `deleverage` cut only if the borrower stays solvent afterwards
+/// @notice Controller that permits a `redeemCollateral` cut only if the borrower stays solvent afterwards
 ///         (post-cut collateral value >= post-cut debt). This encodes the guarantee the real
 ///         `LidoMarketController` must provide, so the invariant suite can assert "core + a
 ///         solvency-enforcing controller never creates bad debt". All other hooks are permissive.

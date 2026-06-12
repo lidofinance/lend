@@ -89,7 +89,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         uint256 slice = lenderShares / 2;
 
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoBlue(address(morpho)).deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+            ILidoBlue(address(morpho)).redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
 
         assertGt(debtCanceled, 0.2e18, "debt cancelled exceeds prior liquidity (gate cleared)");
         assertGt(collateralSeized, 0, "collateral seized");

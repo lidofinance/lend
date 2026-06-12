@@ -154,13 +154,13 @@ library EventsLib {
     /// @param controller The bound controller.
     event SetMarketController(Id indexed id, address indexed controller);
 
-    /// @notice Emitted when the deleverage extension is enabled for a market at creation.
+    /// @notice Emitted when `redeemCollateral` is enabled for a market at creation.
     /// @param id The market id.
     event EnableDeleverage(Id indexed id);
 
-    /// @notice Emitted on a successful `deleverage`.
+    /// @notice Emitted on a successful `redeemCollateral`.
     /// @param id The market id.
-    /// @param caller The caller of `deleverage`.
+    /// @param caller The caller of `redeemCollateral`.
     /// @param onBehalf The supply-side account whose shares are burned.
     /// @param borrower The borrower whose debt and collateral are reduced.
     /// @param supplyShares The supply shares burned from `onBehalf`.

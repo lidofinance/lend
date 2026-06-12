@@ -7,7 +7,7 @@ import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
 import {ILidoBlueMarketController} from "../../src/interfaces/ILidoBlueMarketController.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
-contract DeleverageIntegrationTest is BaseTestWithController {
+contract RedeemCollateralIntegrationTest is BaseTestWithController {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
@@ -48,7 +48,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
     function testDeleverageMarketNotCreated(MarketParams memory mp) public {
         vm.assume(neq(mp, marketParams));
         vm.expectRevert(bytes(ErrorsLib.MARKET_NOT_CREATED));
-        _lido().deleverage(mp, 1, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(mp, 1, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageDisabled() public {
@@ -61,23 +61,23 @@ contract DeleverageIntegrationTest is BaseTestWithController {
             lltv: DEFAULT_TEST_LLTV
         });
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_DISABLED));
-        _lido().deleverage(base, 1, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(base, 1, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageZeroShares() public {
         vm.expectRevert(bytes(ErrorsLib.ZERO_SHARES));
-        _lido().deleverage(marketParams, 0, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, 0, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageZeroReceiver() public {
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
-        _lido().deleverage(marketParams, 1, BORROWER, address(this), address(0));
+        _lido().redeemCollateral(marketParams, 1, BORROWER, address(this), address(0));
     }
 
     function testDeleverageUnauthorized() public {
         vm.prank(RECEIVER); // not authorized for onBehalf == BORROWER
         vm.expectRevert(bytes(ErrorsLib.UNAUTHORIZED));
-        _lido().deleverage(marketParams, 1, BORROWER, BORROWER, RECEIVER);
+        _lido().redeemCollateral(marketParams, 1, BORROWER, BORROWER, RECEIVER);
     }
 
     function testDeleverageIneligibleBorrower() public {
@@ -85,7 +85,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
         // Target ONBEHALF, who never borrowed → no debt.
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_NO_DEBT));
-        _lido().deleverage(marketParams, supplyShares, ONBEHALF, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, supplyShares, ONBEHALF, address(this), RECEIVER);
     }
 
     function testDeleverageLiquidityGateBoundary() public {
@@ -95,12 +95,12 @@ contract DeleverageIntegrationTest is BaseTestWithController {
 
         // debtCanceled == avail must revert (the gate requires strictly greater).
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
-        _lido().deleverage(marketParams, avail * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, avail * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
 
         // debtCanceled == avail + 1 clears the gate and executes: at 1:1 it seizes exactly avail + 1.
         uint256 sharesBefore = morpho.supplyShares(id, address(this));
         uint256 slice = (avail + 1) * SharesMathLib.VIRTUAL_SHARES;
-        (uint256 seized,) = _lido().deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+        (uint256 seized,) = _lido().redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
         assertEq(seized, avail + 1, "seized exactly the cancelled debt at 1:1");
         assertEq(morpho.supplyShares(id, address(this)), sharesBefore - slice, "lender shares reduced by the slice");
     }
@@ -112,7 +112,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         oracle.setPrice(MAX_COLLATERAL_PRICE);
         // debtCanceled == 1 → collateralSeized = 1 * SCALE / 1e40 rounds to 0.
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_SLICE_TOO_SMALL));
-        _lido().deleverage(marketParams, 1 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, 1 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageOverCapCollateral() public {
@@ -120,14 +120,14 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         oracle.setPrice(ORACLE_PRICE_SCALE / 2); // collateral now worth 50e18
         // debtCanceled 60e18 → collateralSeized 120e18 > 100e18 collateral.
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL));
-        _lido().deleverage(marketParams, 60e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, 60e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageOverCapBorrowShares() public {
         _openPosition(100e18, 100e18, 70e18);
         // debtCanceled 80e18 → burns more than the 70e18 debt (collateralSeized 80e18 <= 100e18 collateral).
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_EXCEEDS_DEBT));
-        _lido().deleverage(marketParams, 80e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, 80e18 * SharesMathLib.VIRTUAL_SHARES, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageCannotCancelMoreThanOwned() public {
@@ -141,7 +141,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         uint256 lenderShares = morpho.supplyShares(id, address(this));
         uint256 tooMany = lenderShares + 1e18 * SharesMathLib.VIRTUAL_SHARES;
         vm.expectRevert(stdError.arithmeticError);
-        _lido().deleverage(marketParams, tooMany, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, tooMany, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageAuthorizedViaApproval() public {
@@ -152,7 +152,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         uint256 supplyShares = sharesBefore / 2;
 
         vm.prank(RECEIVER);
-        _lido().deleverage(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
 
         assertEq(morpho.supplyShares(id, address(this)), sharesBefore - supplyShares, "lender shares reduced");
     }
@@ -164,7 +164,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
 
         uint256 lenderShares = morpho.supplyShares(id, address(this));
         uint256 slice = bound(sliceSeed, lenderShares / 4, (lenderShares * 3) / 4);
-        (uint256 seized, uint256 canceled) = _lido().deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+        (uint256 seized, uint256 canceled) = _lido().redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
         assertEq(seized, canceled, "fair 1:1 swap"); // price is 1:1
         assertEq(morpho.collateral(id, BORROWER), collateral - seized, "borrower collateral debited by the seizure");
 
@@ -187,7 +187,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         _openPosition(supplied, collateral, supplied); // sole lender, supply == borrow → free liquidity 0
 
         uint256 allShares = morpho.supplyShares(id, address(this));
-        (uint256 seized,) = _lido().deleverage(marketParams, allShares, BORROWER, address(this), RECEIVER);
+        (uint256 seized,) = _lido().redeemCollateral(marketParams, allShares, BORROWER, address(this), RECEIVER);
 
         // Cancelling the entire stake zeroes the market exactly: at a single first supply, totalShares ==
         // assets * VIRTUAL_SHARES, so the cancellation leaves no rounding remainder.
@@ -222,7 +222,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         // onBehalf == borrower == address(this).
         uint256 slice = bound(sliceSeed, supplyBefore / 4, (supplyBefore * 3) / 4);
         (uint256 seized, uint256 canceled) =
-            _lido().deleverage(marketParams, slice, address(this), address(this), RECEIVER);
+            _lido().redeemCollateral(marketParams, slice, address(this), address(this), RECEIVER);
         assertEq(seized, canceled, "fair 1:1 swap");
 
         uint256 burn = canceled.toSharesUp(tBABefore, tBSBefore);
@@ -237,7 +237,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         controller.setRevertOn(ILidoBlueMarketController.HookEvent.Deleverage, true);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
         vm.expectRevert(bytes("controller: blocked"));
-        _lido().deleverage(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
     }
 
     function testDeleverageHookPayload() public {
@@ -246,7 +246,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         uint256 expectedCanceled = supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
         uint256 expectedSeized = expectedCanceled.mulDivDown(ORACLE_PRICE_SCALE, oracle.price());
 
-        _lido().deleverage(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
 
         ILidoBlueMarketController.DeleverageHookData memory d =
             abi.decode(controller.lastData(), (ILidoBlueMarketController.DeleverageHookData));
@@ -295,7 +295,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
         v.borrowSharesBefore = morpho.borrowShares(id, BORROWER);
 
         (v.retSeized, v.retCanceled) =
-            _lido().deleverage(marketParams, v.sliceShares, BORROWER, address(this), RECEIVER);
+            _lido().redeemCollateral(marketParams, v.sliceShares, BORROWER, address(this), RECEIVER);
 
         // Exact arithmetic (pins rounding direction).
         assertEq(v.retCanceled, v.debtCanceled, "return debtCanceled");
@@ -343,7 +343,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
 
         uint256 tSA = morpho.totalSupplyAssets(id);
 
-        _lido().deleverage(marketParams, sliceShares, BORROWER, address(this), RECEIVER);
+        _lido().redeemCollateral(marketParams, sliceShares, BORROWER, address(this), RECEIVER);
 
         // The loss is NOT socialized: total supply fell only by the canceled amount, though this slice came out
         // of an underwater position. `liquidate` would have written `totalSupplyAssets` down here; deleverage does not.
@@ -404,7 +404,7 @@ contract DeleverageIntegrationTest is BaseTestWithController {
 
         v.borrowSharesBefore = morpho.borrowShares(mid, BORROWER);
 
-        (v.retSeized, v.retCanceled) = _lido().deleverage(mp, v.sliceShares, BORROWER, address(this), RECEIVER);
+        (v.retSeized, v.retCanceled) = _lido().redeemCollateral(mp, v.sliceShares, BORROWER, address(this), RECEIVER);
 
         // Exact arithmetic on a skewed ratio — pins toAssetsDown / toSharesUp rounding direction.
         assertEq(v.retCanceled, v.debtCanceled, "debtCanceled via toAssetsDown");

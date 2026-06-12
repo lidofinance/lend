@@ -24,13 +24,13 @@ interface ILidoBlue is IMorphoStaticTyping {
     /// @param newOwner The new owner of the contract.
     function initialize(address newOwner) external;
 
-    /// @notice Creates the market `marketParams` as a controlled market, binding `controller` and the deleverage
+    /// @notice Creates the market `marketParams` as a controlled market, binding `controller` and the `redeemCollateral`
     /// opt-in.
     /// @dev Fork-added overload; `onlyOwner` like the single-argument `createMarket`, which is the only way to
-    /// create a market without a controller. The controller and deleverage opt-in cannot be changed after creation.
+    /// create a market without a controller. The controller and `redeemCollateral` opt-in cannot be changed after creation.
     /// @param marketParams The market to create.
     /// @param controller The controller to bind; must be non-zero and built for this market.
-    /// @param enableDeleverage Whether the `deleverage` primitive is enabled for this market.
+    /// @param enableDeleverage Whether `redeemCollateral` is enabled for this market.
     function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) external;
 
     /// @notice Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
@@ -38,14 +38,14 @@ interface ILidoBlue is IMorphoStaticTyping {
     /// an address authorized by `onBehalf`, and only when ordinary withdraw liquidity is insufficient to cover the
     /// cancelled debt. The bound controller's `Deleverage` hook enforces borrower eligibility and the per-cut
     /// slice cap, and may revert. Reverts while another action's controller hook is executing.
-    /// @param marketParams The market to deleverage on.
+    /// @param marketParams The market to redeem on.
     /// @param supplyShares The amount of supply shares to burn from `onBehalf`.
     /// @param borrower The borrower whose debt is cancelled and collateral seized.
     /// @param onBehalf The address whose supply shares are burned.
     /// @param receiver The address that receives the seized collateral.
     /// @return collateralSeized The amount of collateral seized.
     /// @return debtCanceled The amount of borrower debt cancelled.
-    function deleverage(
+    function redeemCollateral(
         MarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,
@@ -57,7 +57,7 @@ interface ILidoBlue is IMorphoStaticTyping {
     /// @dev Set only at market creation; immutable thereafter.
     function marketController(Id id) external view returns (address);
 
-    /// @notice Whether the `deleverage` primitive is enabled for the market corresponding to `id`.
+    /// @notice Whether `redeemCollateral` is enabled for the market corresponding to `id`.
     /// @dev Set only at market creation; immutable thereafter.
     function deleverageEnabled(Id id) external view returns (bool);
 }

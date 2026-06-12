@@ -28,19 +28,19 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
   The owner is set by a one-shot `initialize(newOwner)` instead of the constructor, and the implementation petrifies itself in its constructor.
   `DOMAIN_SEPARATOR` is computed on every call from the current chain id and address, so EIP-712 signatures bind to the proxy.
 - Market creation: only the owner can create markets; upstream it is permissionless.
-  `createMarket(params)` creates a regular Morpho market; `createMarket(params, controller, enableDeleverage)` creates one with a controller and, optionally, `deleverage` enabled — neither choice can be changed later.
+  `createMarket(params)` creates a regular Morpho market; `createMarket(params, controller, enableDeleverage)` creates one with a controller and, optionally, `redeemCollateral` enabled — neither choice can be changed later.
   `enableIrm` / `enableLltv` are removed: `createMarket` enables the market's IRM and LLTV itself, emitting `EnableIrm` / `EnableLltv` on first use.
 - New per-market settings are stored in their own mappings; `MarketParams` is never extended, because its shape defines the market id that integrators compute off-chain.
-- Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `deleverage`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
+- Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `redeemCollateral`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
   While a controller hook is executing, the hooked actions revert with `HOOK_REENTRANCY`; the check lives in the hook dispatch, so a market without a controller is never affected.
   The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working; `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
-- `deleverage(...)`: lets a lender exit by cancelling a borrower's debt against the lender's supply shares when there is not enough liquidity for a normal withdraw; enabled per market at creation.
+- `redeemCollateral(...)`: lets a lender exit by cancelling a borrower's debt against the lender's supply shares when there is not enough liquidity for a normal withdraw; enabled per market at creation.
 
 ## Interfaces and libraries
 
 - `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and every inherited member whose fork behavior differs carries a `Warning` annotation.
   There are no other signature changes; a member without a fork `Warning` behaves exactly as upstream.
-- `src/interfaces/ILidoBlue.sol` declares only the fork-added members (`initialize`, `initialized`, the `createMarket` overload, `deleverage`, `marketController`, `deleverageEnabled`); `LidoBlue is ILidoBlue is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
+- `src/interfaces/ILidoBlue.sol` declares only the fork-added members (`initialize`, `initialized`, the `createMarket` overload, `redeemCollateral`, `marketController`, `deleverageEnabled`); `LidoBlue is ILidoBlue is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
 - Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol` (`/* FORK-ADDED */` sections); `MorphoStorageLib.sol` exposes the fork-added storage slots.
 - ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
 
@@ -77,7 +77,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 ## Tests and verification
 
 - Upstream Foundry tests are retained; the petrified core deploys in tests via `test/helpers/TestProxy.sol`.
-- Fork tests: `test/integration/{Controller,Deleverage,Hooks,Initialize,Reentrancy}IntegrationTest.sol` and `test/invariant/DeleverageInvariantTest.sol` (fuzzes `deleverage` against a solvency-enforcing controller mock).
+- Fork tests: `test/integration/{Controller,Hooks,Initialize,RedeemCollateral,Reentrancy}IntegrationTest.sol` and `test/invariant/RedeemCollateralInvariantTest.sol` (fuzzes `redeemCollateral` against a solvency-enforcing controller mock).
 - Certora: the inherited layer does not currently compile (`certora/helpers/MorphoHarness.sol` still imports the pre-fork `src/Morpho.sol`); the dead `enableIrm`/`enableLltv` rules are removed from `Reverts.spec`; fork specs are TODO; the CI workflow stays manual-only until they pass, and the confs still pin `solc-0.8.19`.
 
 ## Syncing with upstream

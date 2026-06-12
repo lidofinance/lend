@@ -365,7 +365,7 @@ interface IMorphoStaticTyping is IMorphoBase {
 /// @title IMorpho
 /// @author Morpho Labs. Modified by Lido.
 /// @dev Use this interface for Morpho to have access to all the functions with the appropriate function signatures.
-/// For the fork-added members (`initialize`, the `createMarket` overload, `deleverage`, `marketController`,
+/// For the fork-added members (`initialize`, the `createMarket` overload, `redeemCollateral`, `marketController`,
 /// `deleverageEnabled`), see `ILidoBlue`.
 interface IMorpho is IMorphoBase {
     /// @notice The state of the position of `user` on the market corresponding to `id`.

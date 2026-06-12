@@ -12,7 +12,7 @@ import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 // near zero free liquidity (LENDER supplies, a borrower borrows the same) so the liquidity gate clears;
 // `warp` lets interest compound the share/asset rate far from 1:1; `setControllerPrice` swings health so a
 // borrower can go underwater. The controller enforces post-cut solvency — the bad-debt backstop the real
-// LidoMarketController must provide. `deleverageNoRevert` asserts the exact post-state of every successful
+// LidoMarketController must provide. `redeemCollateralNoRevert` asserts the exact post-state of every successful
 // cut against the contract's *returned* values plus an independent collateral-value-conservation bound, so
 // it catches a wrong formula and not just a regressed one. Deterministic tests cover the branches fuzzing
 // reaches rarely: the controller blocking an insolvent cut, and the gate blocking a cut while liquidity
@@ -20,7 +20,7 @@ import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 //
 // Out of scope (covered elsewhere or known limits): caller != onBehalf authorization (integration tests),
 // and a second supplier (only the borrow side is multi-position here).
-contract DeleverageInvariantTest is InvariantTest {
+contract RedeemCollateralInvariantTest is InvariantTest {
     using MathLib for uint256;
     using SharesMathLib for uint256;
     using MorphoLib for IMorpho;
@@ -73,7 +73,7 @@ contract DeleverageInvariantTest is InvariantTest {
 
     function setUp() public override {
         selectors.push(this.topUpControllerMarket.selector);
-        selectors.push(this.deleverageNoRevert.selector);
+        selectors.push(this.redeemCollateralNoRevert.selector);
         selectors.push(this.setControllerPrice.selector);
         selectors.push(this.warp.selector);
 
@@ -161,7 +161,7 @@ contract DeleverageInvariantTest is InvariantTest {
         morpho.borrow(cParams, amount, 0, borrower, borrower);
     }
 
-    function deleverageNoRevert(uint256 borrowerSeed, uint256 sliceSeed) external {
+    function redeemCollateralNoRevert(uint256 borrowerSeed, uint256 sliceSeed) external {
         morpho.accrueInterest(cParams);
 
         address borrower = borrowerSeed % 2 == 0 ? CB : CB2;
@@ -210,7 +210,7 @@ contract DeleverageInvariantTest is InvariantTest {
 
         vm.prank(LENDER);
         vm.expectRevert(bytes("controller: would be insolvent"));
-        ILidoBlue(address(morpho)).deleverage(cParams, c.sliceShares, CB, LENDER, LENDER);
+        ILidoBlue(address(morpho)).redeemCollateral(cParams, c.sliceShares, CB, LENDER, LENDER);
     }
 
     // deleverage is the fallback for when ordinary liquidity is gone; the gate must reject a cut whose
@@ -227,7 +227,7 @@ contract DeleverageInvariantTest is InvariantTest {
         uint256 sliceShares = morpho.supplyShares(cId, LENDER) / 4;
         vm.prank(LENDER);
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
-        ILidoBlue(address(morpho)).deleverage(cParams, sliceShares, CB, LENDER, LENDER);
+        ILidoBlue(address(morpho)).redeemCollateral(cParams, sliceShares, CB, LENDER, LENDER);
     }
 
     /* INVARIANTS */
@@ -269,7 +269,7 @@ contract DeleverageInvariantTest is InvariantTest {
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoBlue(address(morpho)).deleverage(cParams, c.sliceShares, borrower, LENDER, LENDER);
+            ILidoBlue(address(morpho)).redeemCollateral(cParams, c.sliceShares, borrower, LENDER, LENDER);
 
         // Drift sentinel: the contract still computes what the mirror predicts.
         assertEq(collateralSeized, c.collateralSeized, "dlv: return collateralSeized");

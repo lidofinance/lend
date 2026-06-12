@@ -39,7 +39,7 @@ import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
 /// @notice Working-name Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
-///      `deleverage` extension is core functionality: with no controller it uses the
+///      `redeemCollateral` extension is core functionality: with no controller it uses the
 ///      core default rules, and with a controller it can be restricted further by market policy.
 contract LidoBlue is ILidoBlue {
     using MathLib for uint128;
@@ -169,7 +169,7 @@ contract LidoBlue is ILidoBlue {
         _createMarket(marketParams, controller, enableDeleverage);
     }
 
-    /// @dev Implements both `createMarket` overloads. The `controller` and deleverage opt-in cannot be
+    /// @dev Implements both `createMarket` overloads. The `controller` and `redeemCollateral` opt-in cannot be
     ///      changed after creation. Marks the market's `irm` and `lltv` as enabled on first use: the
     ///      standalone `enableIrm`/`enableLltv` are removed in this fork since `createMarket` is `onlyOwner`.
     function _createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) internal {
@@ -534,7 +534,7 @@ contract LidoBlue is ILidoBlue {
     /* DELEVERAGE */
 
     /// @inheritdoc ILidoBlue
-    function deleverage(
+    function redeemCollateral(
         MarketParams memory marketParams,
         uint256 supplyShares,
         address borrower,

@@ -82,16 +82,16 @@ library ErrorsLib {
     /// @notice Thrown when a controller is bound whose `marketId` does not match the market.
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
 
-    /// @notice Thrown when `deleverage` is called on a market that did not opt into it.
+    /// @notice Thrown when `redeemCollateral` is called on a market that did not opt into it.
     string internal constant DELEVERAGE_DISABLED = "deleverage disabled";
 
-    /// @notice Thrown when `deleverage` is called with zero supply shares.
+    /// @notice Thrown when `redeemCollateral` is called with zero supply shares.
     string internal constant ZERO_SHARES = "zero shares";
 
-    /// @notice Thrown when `deleverage` is called while ordinary withdraw liquidity still covers the amount.
+    /// @notice Thrown when `redeemCollateral` is called while ordinary withdraw liquidity still covers the amount.
     string internal constant DELEVERAGE_LIQUIDITY_AVAILABLE = "ordinary liquidity available";
 
-    /// @notice Thrown when the borrower has no debt to deleverage.
+    /// @notice Thrown when the borrower has no debt to redeem against.
     string internal constant DELEVERAGE_NO_DEBT = "borrower has no debt";
 
     /// @notice Thrown when the deleverage slice is too small to seize any collateral (rounds to zero).
@@ -103,7 +103,7 @@ library ErrorsLib {
     /// @notice Thrown when the deleverage slice would cancel more than the borrower's debt.
     string internal constant DELEVERAGE_EXCEEDS_DEBT = "deleverage exceeds debt";
 
-    /// @notice Thrown when deleverage is enabled or invoked without a controller.
+    /// @notice Thrown when `redeemCollateral` is enabled without a controller.
     string internal constant DELEVERAGE_REQUIRES_CONTROLLER = "deleverage requires controller";
 
     /// @notice Thrown when `initialize` is called after the contract is already initialized.
