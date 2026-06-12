@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {Id} from "../interfaces/IMorpho.sol";
-import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 /// @title ControllerMock
 /// @notice Permissive market controller for tests. Satisfies the core's binding check
@@ -12,7 +12,7 @@ import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController
 ///         can exercise the per-action gate.
 /// @dev Stores the bound id as `bytes32` immutable to avoid relying on user-defined-value-type
 ///      immutables; wraps back to `Id` in the getter.
-contract ControllerMock is ILidoBlueMarketController {
+contract ControllerMock is ILidoLendMarketController {
     bytes32 internal immutable _marketId;
 
     uint256 public hookCount;

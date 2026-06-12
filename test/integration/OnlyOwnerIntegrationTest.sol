@@ -3,23 +3,23 @@ pragma solidity ^0.8.0;
 
 import "../BaseTest.sol";
 
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
 
 contract OnlyOwnerIntegrationTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
 
     function testDeployWithAddressZero() public {
-        address morphoImpl = address(new LidoBlue());
+        address morphoImpl = address(new LidoLend());
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
-        new TestProxy(morphoImpl, abi.encodeCall(LidoBlue.initialize, (address(0))));
+        new TestProxy(morphoImpl, abi.encodeCall(LidoLend.initialize, (address(0))));
     }
 
     function testDeployEmitOwner() public {
-        address morphoImpl = address(new LidoBlue());
+        address morphoImpl = address(new LidoLend());
         vm.expectEmit();
         emit EventsLib.SetOwner(OWNER);
-        new TestProxy(morphoImpl, abi.encodeCall(LidoBlue.initialize, (OWNER)));
+        new TestProxy(morphoImpl, abi.encodeCall(LidoLend.initialize, (OWNER)));
     }
 
     function testSetOwnerWhenNotOwner(address addressFuzz) public {
@@ -62,7 +62,7 @@ contract OnlyOwnerIntegrationTest is BaseTest {
 
         vm.prank(addressFuzz);
         vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        ILidoBlue(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
+        ILidoLend(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
     }
 
     function testSetFeeWhenNotOwner(address addressFuzz, uint256 feeFuzz) public {

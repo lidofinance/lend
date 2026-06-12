@@ -8,11 +8,11 @@ import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 contract InitializeIntegrationTest is BaseTest {
     function testCannotReinitializeProxy() public {
         vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
-        LidoBlue(address(morpho)).initialize(OWNER);
+        LidoLend(address(morpho)).initialize(OWNER);
     }
 
     function testImplementationIsPetrified() public {
-        LidoBlue impl = new LidoBlue();
+        LidoLend impl = new LidoLend();
         vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
         impl.initialize(OWNER);
     }
@@ -23,7 +23,7 @@ contract InitializeIntegrationTest is BaseTest {
     }
 
     function testDomainSeparatorDiffersFromImplementation() public {
-        LidoBlue impl = new LidoBlue();
+        LidoLend impl = new LidoLend();
         assertTrue(
             morpho.DOMAIN_SEPARATOR() != impl.DOMAIN_SEPARATOR(),
             "proxy and implementation must derive different domain separators"

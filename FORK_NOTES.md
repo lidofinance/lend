@@ -1,28 +1,28 @@
 # Morpho Blue Fork Notes
 
 This repository is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, extended for the Lido Lending product and imported by the product repository as a subrepository.
-The core `src/Morpho.sol` is renamed to `src/LidoBlue.sol`; everything else keeps upstream names and is edited in place where the fork requires it.
+The core `src/Morpho.sol` is renamed to `src/LidoLend.sol`; everything else keeps upstream names and is edited in place where the fork requires it.
 
 ## Fork point
 
 - Upstream: `morpho-org/morpho-blue`, branch `main`, commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a` (verified ancestor of upstream `main`).
-- The core file is forked as `src/LidoBlue.sol`; every other path matches upstream.
+- The core file is forked as `src/LidoLend.sol`; every other path matches upstream.
 
 ## Layout rule
 
 Inherited files are edited in place under their upstream names; the per-path diff to the fork point is the change record.
-New files exist only for entities with no upstream counterpart: `ILidoBlue.sol`, `ILidoBlueMarketController.sol`, the controller mocks, `TestProxy.sol`.
-The core is the single rename (`Morpho.sol` → `LidoBlue.sol`): its name is deploy-facing (verification, ABI artifacts, audits) and the upstream name is the upstream brand; nothing else meets both conditions, so nothing else is renamed.
+New files exist only for entities with no upstream counterpart: `ILidoLend.sol`, `ILidoLendMarketController.sol`, the controller mocks, `TestProxy.sol`.
+The core is the single rename (`Morpho.sol` → `LidoLend.sol`): its name is deploy-facing (verification, ABI artifacts, audits) and the upstream name is the upstream brand; nothing else meets both conditions, so nothing else is renamed.
 The modification record (GPL-2.0 §2(a)) is the git history anchored to the fork point plus this document; `SECURITY.md` routes vulnerability reports to Lido.
 
 ## Reproducing the diff
 
 ```sh
 git diff -M 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src/
-git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src/Morpho.sol src/LidoBlue.sol
+git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src/Morpho.sol src/LidoLend.sol
 ```
 
-## Core changes (`src/LidoBlue.sol`)
+## Core changes (`src/LidoLend.sol`)
 
 - Proxy setup: the core runs behind an `OssifiableProxy` (the proxy lives in the product repo).
   The owner is set by a one-shot `initialize(newOwner)` instead of the constructor, and the implementation petrifies itself in its constructor.
@@ -40,7 +40,7 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 
 - `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and every inherited member whose fork behavior differs carries a `Warning` annotation.
   There are no other signature changes; a member without a fork `Warning` behaves exactly as upstream.
-- `src/interfaces/ILidoBlue.sol` declares only the fork-added members (`initialize`, `initialized`, the `createMarket` overload, `redeemCollateral`, `marketController`, `deleverageEnabled`); `LidoBlue is ILidoBlue is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
+- `src/interfaces/ILidoLend.sol` declares only the fork-added members (`initialize`, `initialized`, the `createMarket` overload, `redeemCollateral`, `marketController`, `deleverageEnabled`); `LidoLend is ILidoLend is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
 - Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol` (`/* FORK-ADDED */` sections); `MorphoStorageLib.sol` exposes the fork-added storage slots.
 - ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
 

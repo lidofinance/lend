@@ -3,13 +3,13 @@ pragma solidity >=0.8.0;
 
 import {Id} from "./IMorpho.sol";
 
-/// @title ILidoBlueMarketController
+/// @title ILidoLendMarketController
 /// @author Lido.
 /// @notice The market controller's interface — the full coupling between the core and a controller:
 /// `marketId()`, checked when the controller is bound at market creation, and the `on(id, e, data)` hook
 /// entrypoint, through which the core dispatches every action (HookEvent order and struct layouts must
 /// match the core so the abi-encoded hook payloads stay compatible).
-interface ILidoBlueMarketController {
+interface ILidoLendMarketController {
     enum HookEvent {
         Supply,
         Withdraw,

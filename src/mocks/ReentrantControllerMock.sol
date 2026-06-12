@@ -2,14 +2,14 @@
 pragma solidity ^0.8.0;
 
 import {Id} from "../interfaces/IMorpho.sol";
-import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 /// @title ReentrantControllerMock
 /// @notice Adversarial controller for reentrancy tests: on its first hook dispatch it reenters the
 ///         core with a preset call (`arm`), exercising the window where `_hook` runs before the
 ///         calling function has written its state. Single-shot to avoid unbounded recursion; bubbles
 ///         the reentrant revert so the test sees the real failure.
-contract ReentrantControllerMock is ILidoBlueMarketController {
+contract ReentrantControllerMock is ILidoLendMarketController {
     bytes32 internal immutable _marketId;
     address public immutable core;
 

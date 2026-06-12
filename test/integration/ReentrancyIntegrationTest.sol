@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 import "../BaseTest.sol";
 
 import {IMorphoBase} from "../../src/interfaces/IMorpho.sol";
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 import {ReentrantControllerMock} from "../../src/mocks/ReentrantControllerMock.sol";
 
@@ -23,8 +23,8 @@ contract ReentrancyIntegrationTest is BaseTest {
     Id internal did;
     ReentrantControllerMock internal rc;
 
-    function _lido() internal view returns (ILidoBlue) {
-        return ILidoBlue(address(morpho));
+    function _lido() internal view returns (ILidoLend) {
+        return ILidoLend(address(morpho));
     }
 
     /// @dev Arms the reentrant call and asserts the hook actually dispatches it (a negative control:
@@ -152,7 +152,7 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
         uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
-        _armAndExpect(abi.encodeCall(ILidoBlue.redeemCollateral, (dp, slice, BORROWER, address(this), RECEIVER)));
+        _armAndExpect(abi.encodeCall(ILidoLend.redeemCollateral, (dp, slice, BORROWER, address(this), RECEIVER)));
         vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         _lido().redeemCollateral(dp, slice, BORROWER, address(this), RECEIVER);
     }

@@ -19,7 +19,7 @@ library MorphoStorageLib {
     uint256 internal constant IS_AUTHORIZED_SLOT = 6;
     uint256 internal constant NONCE_SLOT = 7;
     uint256 internal constant ID_TO_MARKET_PARAMS_SLOT = 8;
-    // Fork-added slots (LidoBlue), appended after upstream storage; see FORK_NOTES.md "Storage layout".
+    // Fork-added slots (LidoLend), appended after upstream storage; see FORK_NOTES.md "Storage layout".
     uint256 internal constant MARKET_CONTROLLER_SLOT = 9;
     uint256 internal constant DELEVERAGE_ENABLED_SLOT = 10;
     uint256 internal constant INITIALIZED_SLOT = 11;

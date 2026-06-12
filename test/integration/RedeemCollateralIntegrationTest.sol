@@ -3,8 +3,8 @@ pragma solidity ^0.8.0;
 
 import "../BaseTestWithController.sol";
 
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
-import {ILidoBlueMarketController} from "../../src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract RedeemCollateralIntegrationTest is BaseTestWithController {
@@ -32,8 +32,8 @@ contract RedeemCollateralIntegrationTest is BaseTestWithController {
         uint256 retCanceled;
     }
 
-    function _lido() internal view returns (ILidoBlue) {
-        return ILidoBlue(address(morpho));
+    function _lido() internal view returns (ILidoLend) {
+        return ILidoLend(address(morpho));
     }
 
     function _openPosition(uint256 supplied, uint256 collateral, uint256 borrowed) internal {
@@ -234,7 +234,7 @@ contract RedeemCollateralIntegrationTest is BaseTestWithController {
 
     function testDeleverageControllerCanBlock() public {
         _openPosition(100e18, 100e18, 70e18);
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Deleverage, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Deleverage, true);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
         vm.expectRevert(bytes("controller: blocked"));
         _lido().redeemCollateral(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
@@ -248,8 +248,8 @@ contract RedeemCollateralIntegrationTest is BaseTestWithController {
 
         _lido().redeemCollateral(marketParams, supplyShares, BORROWER, address(this), RECEIVER);
 
-        ILidoBlueMarketController.DeleverageHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.DeleverageHookData));
+        ILidoLendMarketController.DeleverageHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.DeleverageHookData));
         assertEq(d.caller, address(this), "caller");
         assertEq(d.onBehalf, address(this), "onBehalf");
         assertEq(d.borrower, BORROWER, "borrower");

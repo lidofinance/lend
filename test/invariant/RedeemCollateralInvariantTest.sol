@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import "../InvariantTest.sol";
 
-import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
 import {EnforcingControllerMock} from "../../src/mocks/EnforcingControllerMock.sol";
 import {OracleMock} from "../../src/mocks/OracleMock.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
@@ -91,7 +91,7 @@ contract RedeemCollateralInvariantTest is InvariantTest {
         cId = cParams.id();
         cController = new EnforcingControllerMock(cId, address(morpho), address(cOracle));
         vm.startPrank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(cParams, address(cController), true);
+        ILidoLend(address(morpho)).createMarket(cParams, address(cController), true);
         morpho.setFee(cParams, MARKET_FEE);
         vm.stopPrank();
 
@@ -210,7 +210,7 @@ contract RedeemCollateralInvariantTest is InvariantTest {
 
         vm.prank(LENDER);
         vm.expectRevert(bytes("controller: would be insolvent"));
-        ILidoBlue(address(morpho)).redeemCollateral(cParams, c.sliceShares, CB, LENDER, LENDER);
+        ILidoLend(address(morpho)).redeemCollateral(cParams, c.sliceShares, CB, LENDER, LENDER);
     }
 
     // deleverage is the fallback for when ordinary liquidity is gone; the gate must reject a cut whose
@@ -227,7 +227,7 @@ contract RedeemCollateralInvariantTest is InvariantTest {
         uint256 sliceShares = morpho.supplyShares(cId, LENDER) / 4;
         vm.prank(LENDER);
         vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE));
-        ILidoBlue(address(morpho)).redeemCollateral(cParams, sliceShares, CB, LENDER, LENDER);
+        ILidoLend(address(morpho)).redeemCollateral(cParams, sliceShares, CB, LENDER, LENDER);
     }
 
     /* INVARIANTS */
@@ -269,7 +269,7 @@ contract RedeemCollateralInvariantTest is InvariantTest {
 
         vm.prank(LENDER);
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoBlue(address(morpho)).redeemCollateral(cParams, c.sliceShares, borrower, LENDER, LENDER);
+            ILidoLend(address(morpho)).redeemCollateral(cParams, c.sliceShares, borrower, LENDER, LENDER);
 
         // Drift sentinel: the contract still computes what the mirror predicts.
         assertEq(collateralSeized, c.collateralSeized, "dlv: return collateralSeized");

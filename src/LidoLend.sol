@@ -31,17 +31,17 @@ import {SharesMathLib} from "./libraries/SharesMathLib.sol";
 import {MarketParamsLib} from "./libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
-import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
-import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
+import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
+import {ILidoLend} from "./interfaces/ILidoLend.sol";
 
-/// @title LidoBlue
+/// @title LidoLend
 /// @author Morpho Labs. Modified by Lido.
-/// @notice Working-name Morpho Blue fork core with optional per-market controllers.
+/// @notice Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
 ///      `redeemCollateral` extension is core functionality: with no controller it uses the
 ///      core default rules, and with a controller it can be restricted further by market policy.
-contract LidoBlue is ILidoBlue {
+contract LidoLend is ILidoLend {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
@@ -82,11 +82,11 @@ contract LidoBlue is ILidoBlue {
 
     /* FORK STORAGE */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     mapping(Id => address) public marketController;
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     mapping(Id => bool) public deleverageEnabled;
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     bool public initialized;
 
     /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
@@ -100,7 +100,7 @@ contract LidoBlue is ILidoBlue {
         initialized = true;
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     function initialize(address newOwner) external {
         require(!initialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
@@ -160,7 +160,7 @@ contract LidoBlue is ILidoBlue {
         _createMarket(marketParams, address(0), false);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage)
         external
         onlyOwner
@@ -193,7 +193,7 @@ contract LidoBlue is ILidoBlue {
 
         if (controller != address(0)) {
             require(
-                Id.unwrap(ILidoBlueMarketController(controller).marketId()) == Id.unwrap(id),
+                Id.unwrap(ILidoLendMarketController(controller).marketId()) == Id.unwrap(id),
                 ErrorsLib.CONTROLLER_MISMATCH
             );
             marketController[id] = controller;
@@ -233,9 +233,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Supply,
+            ILidoLendMarketController.HookEvent.Supply,
             abi.encode(
-                ILidoBlueMarketController.SupplyHookData({
+                ILidoLendMarketController.SupplyHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -276,9 +276,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Withdraw,
+            ILidoLendMarketController.HookEvent.Withdraw,
             abi.encode(
-                ILidoBlueMarketController.WithdrawHookData({
+                ILidoLendMarketController.WithdrawHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -321,9 +321,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Borrow,
+            ILidoLendMarketController.HookEvent.Borrow,
             abi.encode(
-                ILidoBlueMarketController.BorrowHookData({
+                ILidoLendMarketController.BorrowHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -363,9 +363,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Repay,
+            ILidoLendMarketController.HookEvent.Repay,
             abi.encode(
-                ILidoBlueMarketController.RepayHookData({
+                ILidoLendMarketController.RepayHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -400,9 +400,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.SupplyCollateral,
+            ILidoLendMarketController.HookEvent.SupplyCollateral,
             abi.encode(
-                ILidoBlueMarketController.SupplyCollateralHookData({
+                ILidoLendMarketController.SupplyCollateralHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets
                 })
             )
@@ -431,9 +431,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.WithdrawCollateral,
+            ILidoLendMarketController.HookEvent.WithdrawCollateral,
             abi.encode(
-                ILidoBlueMarketController.WithdrawCollateralHookData({
+                ILidoLendMarketController.WithdrawCollateralHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets
                 })
             )
@@ -488,9 +488,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Liquidate,
+            ILidoLendMarketController.HookEvent.Liquidate,
             abi.encode(
-                ILidoBlueMarketController.LiquidateHookData({
+                ILidoLendMarketController.LiquidateHookData({
                     caller: msg.sender, borrower: borrower, seizedAssets: seizedAssets, repaidShares: repaidShares
                 })
             )
@@ -533,7 +533,7 @@ contract LidoBlue is ILidoBlue {
 
     /* DELEVERAGE */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     function redeemCollateral(
         MarketParams memory marketParams,
         uint256 supplyShares,
@@ -566,9 +566,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Deleverage,
+            ILidoLendMarketController.HookEvent.Deleverage,
             abi.encode(
-                ILidoBlueMarketController.DeleverageHookData({
+                ILidoLendMarketController.DeleverageHookData({
                     caller: msg.sender,
                     onBehalf: onBehalf,
                     borrower: borrower,
@@ -655,8 +655,8 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.AccrueInterest,
-            abi.encode(ILidoBlueMarketController.AccrueInterestHookData({caller: msg.sender}))
+            ILidoLendMarketController.HookEvent.AccrueInterest,
+            abi.encode(ILidoLendMarketController.AccrueInterestHookData({caller: msg.sender}))
         );
 
         _accrueInterest(marketParams, id);
@@ -730,12 +730,12 @@ contract LidoBlue is ILidoBlue {
     ///      no controller is never gated. Nested hooks are impossible: a controlled market reverts
     ///      here before dispatching its own hook. The lock is released before the calling function
     ///      writes state and runs Morpho callbacks.
-    function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
+    function _hook(Id id, ILidoLendMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
         if (controller != address(0)) {
             require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
             _hookInProgress = true;
-            ILidoBlueMarketController(controller).on(id, e, data);
+            ILidoLendMarketController(controller).on(id, e, data);
             _hookInProgress = false;
         }
     }

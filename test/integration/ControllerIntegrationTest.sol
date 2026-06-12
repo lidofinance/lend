@@ -7,13 +7,13 @@ import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 contract ControllerIntegrationTest is BaseTestWithController {
     using MorphoLib for IMorpho;
 
-    uint8 internal constant SUPPLY = uint8(ILidoBlueMarketController.HookEvent.Supply);
-    uint8 internal constant BORROW = uint8(ILidoBlueMarketController.HookEvent.Borrow);
-    uint8 internal constant DELEVERAGE = uint8(ILidoBlueMarketController.HookEvent.Deleverage);
+    uint8 internal constant SUPPLY = uint8(ILidoLendMarketController.HookEvent.Supply);
+    uint8 internal constant BORROW = uint8(ILidoLendMarketController.HookEvent.Borrow);
+    uint8 internal constant DELEVERAGE = uint8(ILidoLendMarketController.HookEvent.Deleverage);
 
     function testCreateMarketBindsController() public {
-        assertEq(LidoBlue(address(morpho)).marketController(id), address(controller), "controller bound");
-        assertTrue(LidoBlue(address(morpho)).deleverageEnabled(id), "deleverage enabled");
+        assertEq(LidoLend(address(morpho)).marketController(id), address(controller), "controller bound");
+        assertTrue(LidoLend(address(morpho)).deleverageEnabled(id), "deleverage enabled");
     }
 
     /// @notice The three-argument `createMarket` creates a controlled market: a zero controller is rejected
@@ -24,7 +24,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
 
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(params, address(0), enableDeleverage);
+        ILidoLend(address(morpho)).createMarket(params, address(0), enableDeleverage);
     }
 
     /// @notice A controller may only be bound to the market whose id it declares via `marketId`.
@@ -35,7 +35,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         // `controller` is bound to `id`, not to `params.id()`.
         vm.expectRevert(bytes(ErrorsLib.CONTROLLER_MISMATCH));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(params, address(controller), false);
+        ILidoLend(address(morpho)).createMarket(params, address(controller), false);
     }
 
     function testSupplyFiresSupplyHook() public {
@@ -89,7 +89,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
         uint256 slice = lenderShares / 2;
 
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoBlue(address(morpho)).redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
+            ILidoLend(address(morpho)).redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
 
         assertGt(debtCanceled, 0.2e18, "debt cancelled exceeds prior liquidity (gate cleared)");
         assertGt(collateralSeized, 0, "collateral seized");

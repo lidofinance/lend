@@ -3,16 +3,16 @@ pragma solidity >=0.8.0;
 
 import {Id, IMorphoStaticTyping, MarketParams} from "./IMorpho.sol";
 
-/// @title ILidoBlue
+/// @title ILidoLend
 /// @author Lido.
-/// @notice Typed surface of the `LidoBlue` core: the upstream Morpho interface plus the members added by the fork.
+/// @notice Typed surface of the `LidoLend` core: the upstream Morpho interface plus the members added by the fork.
 /// This interface declares only the fork-added members; the fork-behavior annotations on inherited members live in
 /// place in `IMorpho.sol` (look for the `Warning` tags).
 /// @dev Extends `IMorphoStaticTyping`, not `IMorpho`: the core's public mapping getters (`position`, `market`,
 /// `idToMarketParams`) are tuple-typed, so the core can only satisfy the static-typing variant. This mirrors
 /// upstream `Morpho is IMorphoStaticTyping`. Where a library wants the struct-returning `IMorpho` (e.g.
 /// `MorphoBalancesLib`), cast the same core address to `IMorpho`; both views are ABI-identical.
-interface ILidoBlue is IMorphoStaticTyping {
+interface ILidoLend is IMorphoStaticTyping {
     /// @notice Whether the contract is initialized.
     /// @dev The implementation is petrified to `true` by its constructor; a proxy starts at `false`
     /// and flips on its one-shot `initialize` call.

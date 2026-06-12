@@ -4,8 +4,8 @@ pragma solidity ^0.8.0;
 import {MorphoStorageLib} from "../../../src/libraries/periphery/MorphoStorageLib.sol";
 import {SigUtils} from "../../helpers/SigUtils.sol";
 import {ControllerMock} from "../../../src/mocks/ControllerMock.sol";
-import {ILidoBlue} from "../../../src/interfaces/ILidoBlue.sol";
-import {LidoBlue} from "../../../src/LidoBlue.sol";
+import {ILidoLend} from "../../../src/interfaces/ILidoLend.sol";
+import {LidoLend} from "../../../src/LidoLend.sol";
 
 import "../../BaseTest.sol";
 
@@ -118,7 +118,7 @@ contract MorphoStorageLibTest is BaseTest {
         Id cid = cp.id();
         address controller = address(new ControllerMock(cid));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(cp, controller, true);
+        ILidoLend(address(morpho)).createMarket(cp, controller, true);
 
         bytes32[] memory slots = new bytes32[](3);
         slots[0] = MorphoStorageLib.marketControllerSlot(cid);
@@ -128,10 +128,10 @@ contract MorphoStorageLibTest is BaseTest {
         bytes32[] memory values = morpho.extSloads(slots);
 
         assertEq(abi.decode(abi.encode(values[0]), (address)), controller);
-        assertEq(abi.decode(abi.encode(values[0]), (address)), LidoBlue(address(morpho)).marketController(cid));
+        assertEq(abi.decode(abi.encode(values[0]), (address)), LidoLend(address(morpho)).marketController(cid));
         assertEq(abi.decode(abi.encode(values[1]), (bool)), true);
-        assertEq(abi.decode(abi.encode(values[1]), (bool)), LidoBlue(address(morpho)).deleverageEnabled(cid));
+        assertEq(abi.decode(abi.encode(values[1]), (bool)), LidoLend(address(morpho)).deleverageEnabled(cid));
         assertEq(abi.decode(abi.encode(values[2]), (bool)), true);
-        assertEq(abi.decode(abi.encode(values[2]), (bool)), LidoBlue(address(morpho)).initialized());
+        assertEq(abi.decode(abi.encode(values[2]), (bool)), LidoLend(address(morpho)).initialized());
     }
 }

@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import {Id, IMorpho} from "../interfaces/IMorpho.sol";
 import {IOracle} from "../interfaces/IOracle.sol";
-import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 import "../libraries/ConstantsLib.sol";
 import {MorphoLib} from "../libraries/periphery/MorphoLib.sol";
@@ -15,7 +15,7 @@ import {MathLib} from "../libraries/MathLib.sol";
 ///         (post-cut collateral value >= post-cut debt). This encodes the guarantee the real
 ///         `LidoMarketController` must provide, so the invariant suite can assert "core + a
 ///         solvency-enforcing controller never creates bad debt". All other hooks are permissive.
-contract EnforcingControllerMock is ILidoBlueMarketController {
+contract EnforcingControllerMock is ILidoLendMarketController {
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
     using MathLib for uint256;
@@ -37,8 +37,8 @@ contract EnforcingControllerMock is ILidoBlueMarketController {
     function on(Id id, HookEvent hookEvent, bytes calldata data) external view {
         if (hookEvent != HookEvent.Deleverage) return;
 
-        ILidoBlueMarketController.DeleverageHookData memory d =
-            abi.decode(data, (ILidoBlueMarketController.DeleverageHookData));
+        ILidoLendMarketController.DeleverageHookData memory d =
+            abi.decode(data, (ILidoLendMarketController.DeleverageHookData));
 
         // The hook fires before the core writes state, so these reads are the pre-cut position.
         // The core has already checked collateralSeized <= collateral and the burn <= debt.
