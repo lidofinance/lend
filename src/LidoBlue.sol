@@ -165,6 +165,7 @@ contract LidoBlue is ILidoBlue {
         external
         onlyOwner
     {
+        require(controller != address(0), ErrorsLib.ZERO_ADDRESS);
         _createMarket(marketParams, controller, enableDeleverage);
     }
 

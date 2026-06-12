@@ -16,14 +16,15 @@ contract ControllerIntegrationTest is BaseTestWithController {
         assertTrue(LidoBlue(address(morpho)).deleverageEnabled(id), "deleverage enabled");
     }
 
-    /// @notice Deleverage has no in-core bad-debt backstop, so enabling it without a controller is forbidden.
-    function testCreateMarketRevertsWhenDeleverageEnabledWithoutController() public {
+    /// @notice The three-argument `createMarket` creates a controlled market: a zero controller is rejected
+    ///         regardless of the deleverage flag (plain markets come from the one-argument call).
+    function testCreateMarketRevertsOnZeroController(bool enableDeleverage) public {
         MarketParams memory params = marketParams; // enabled irm/lltv; fresh oracle => uncreated id
         params.oracle = makeAddr("FreshOracle");
 
-        vm.expectRevert(bytes(ErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER));
+        vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(params, address(0), true);
+        ILidoBlue(address(morpho)).createMarket(params, address(0), enableDeleverage);
     }
 
     /// @notice A controller may only be bound to the market whose id it declares via `MARKET_ID`.

@@ -132,7 +132,8 @@ interface IMorphoBase {
     /// @dev Warning: `createMarket` is `onlyOwner` in this fork, whereas upstream Morpho market creation is
     /// permissionless. Creating a market marks its `irm` and `lltv` as enabled on first use, emitting
     /// `EnableIrm`/`EnableLltv` (the standalone `enableIrm`/`enableLltv` are removed in this fork). This function
-    /// binds no controller and leaves `deleverage` disabled; see the three-argument overload in `ILidoBlue`.
+    /// creates a plain market with no controller; the three-argument overload in `ILidoBlue` creates a controlled
+    /// one.
     function createMarket(MarketParams memory marketParams) external;
 
     /// @notice Supplies `assets` or `shares` on behalf of `onBehalf`, optionally calling back the caller's

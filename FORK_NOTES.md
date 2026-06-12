@@ -24,16 +24,17 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 
 ## Core changes (`src/LidoBlue.sol`)
 
-- Upgradeable: the core runs behind an `OssifiableProxy` (lives in the product repo).
-  `DOMAIN_SEPARATOR` is recomputed from `address(this)` and `block.chainid` per call instead of being baked at construction, a one-shot `initialize(newOwner)` replaces the constructor owner, and the implementation is petrified by its constructor.
-- Market creation is `onlyOwner` (upstream: permissionless).
-  The standalone `enableIrm` / `enableLltv` are removed; `createMarket` marks the market's `irm`/`lltv` enabled on first use, emitting the upstream events.
-  The fork-added overload `createMarket(params, controller, enableDeleverage)` atomically binds an optional per-market controller (checked against its `MARKET_ID`) and a `deleverage` opt-in; both are immutable after creation.
-- Fork market parameters live in side mappings, never in `MarketParams`: its shape defines market id derivation and must stay upstream-exact.
+- Proxy setup: the core runs behind an `OssifiableProxy` (the proxy lives in the product repo).
+  The owner is set by a one-shot `initialize(newOwner)` instead of the constructor, and the implementation petrifies itself in its constructor.
+  `DOMAIN_SEPARATOR` is computed on every call from the current chain id and address, so EIP-712 signatures bind to the proxy.
+- Market creation: only the owner can create markets; upstream it is permissionless.
+  `createMarket(params)` creates a regular Morpho market; `createMarket(params, controller, enableDeleverage)` creates one with a controller and, optionally, `deleverage` enabled — neither choice can be changed later.
+  `enableIrm` / `enableLltv` are removed: `createMarket` enables the market's IRM and LLTV itself, emitting `EnableIrm` / `EnableLltv` on first use.
+- New per-market settings are stored in their own mappings; `MarketParams` is never extended, because its shape defines the market id that integrators compute off-chain.
 - Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `deleverage`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
   While a controller hook is executing, the hooked actions revert with `HOOK_REENTRANCY`; the check lives in the hook dispatch, so a market without a controller is never affected.
   The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working; `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
-- `deleverage(...)`: fork-added settlement primitive that cancels a borrower's debt against a lender's supply shares when ordinary withdraw liquidity is insufficient; per-market opt-in.
+- `deleverage(...)`: lets a lender exit by cancelling a borrower's debt against the lender's supply shares when there is not enough liquidity for a normal withdraw; enabled per market at creation.
 
 ## Interfaces and libraries
 

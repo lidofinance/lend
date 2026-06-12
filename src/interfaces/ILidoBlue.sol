@@ -19,11 +19,12 @@ interface ILidoBlue is IMorphoStaticTyping {
     /// @param newOwner The new owner of the contract.
     function initialize(address newOwner) external;
 
-    /// @notice Creates the market `marketParams`, atomically binding its `controller` and deleverage opt-in.
-    /// @dev Fork-added overload; `onlyOwner` like the single-argument `createMarket`, which otherwise keeps
-    /// upstream behavior. The controller and deleverage opt-in cannot be changed after creation.
+    /// @notice Creates the market `marketParams` as a controlled market, binding `controller` and the deleverage
+    /// opt-in.
+    /// @dev Fork-added overload; `onlyOwner` like the single-argument `createMarket`, which is the only way to
+    /// create a market without a controller. The controller and deleverage opt-in cannot be changed after creation.
     /// @param marketParams The market to create.
-    /// @param controller The controller to bind. Pass the zero address for ordinary Morpho behavior with no hooks.
+    /// @param controller The controller to bind; must be non-zero and built for this market.
     /// @param enableDeleverage Whether the `deleverage` primitive is enabled for this market.
     function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) external;
 
