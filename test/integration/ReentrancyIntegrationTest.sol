@@ -5,8 +5,14 @@ import "../BaseTest.sol";
 
 import {IMorphoBase} from "../../src/interfaces/IMorpho.sol";
 import {ILidoBlue} from "../../src/interfaces/ILidoBlue.sol";
+import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
 import {ReentrantControllerMock} from "../../src/mocks/ReentrantControllerMock.sol";
 
+/// @dev The controller hook runs under a transient reentrancy lock: while a hook executes, the nine
+///      hooked entrypoints and `flashLoan` revert with HOOK_REENTRANCY. Each test arms a reentrant
+///      call that would be valid on its own (positions pre-funded; the controller funded, approved,
+///      and authorized), so only the lock can stop it — and arms it into the same entrypoint under
+///      test, so every entrypoint's lock check is pinned individually.
 contract ReentrancyIntegrationTest is BaseTest {
     using MarketParamsLib for MarketParams;
     using SharesMathLib for uint256;
@@ -52,71 +58,64 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.setAuthorization(address(rc), true);
     }
 
-    function testReentrancySupplyCannotWithdrawUncredited() public {
+    function testReentrancySupplyBlocked() public {
         loanToken.setBalance(address(this), 10e18);
-        // Reenter withdraw of shares the in-flight supply has not credited yet → underflow.
-        _armAndExpect(
-            abi.encodeCall(
-                IMorphoBase.withdraw, (dp, 0, 10e18 * SharesMathLib.VIRTUAL_SHARES, address(this), address(this))
-            )
-        );
-        vm.expectRevert(stdError.arithmeticError);
+
+        _armAndExpect(abi.encodeCall(IMorphoBase.supply, (dp, 1e18, 0, address(rc), hex"")));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
     }
 
-    function testReentrancyWithdrawCannotDoubleWithdraw() public {
+    function testReentrancyWithdrawBlocked() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
 
-        uint256 shares = morpho.supplyShares(did, address(this));
-        _armAndExpect(abi.encodeCall(IMorphoBase.withdraw, (dp, 0, shares, address(this), address(this))));
-        vm.expectRevert(stdError.arithmeticError);
-        morpho.withdraw(dp, 0, shares, address(this), address(this));
+        _armAndExpect(abi.encodeCall(IMorphoBase.withdraw, (dp, 1e18, 0, address(this), address(this))));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.withdraw(dp, 10e18, 0, address(this), address(this));
     }
 
-    function testReentrancyBorrowCannotExceedLtv() public {
+    function testReentrancyBorrowBlocked() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
         collateralToken.setBalance(address(this), 100e18);
         morpho.supplyCollateral(dp, 100e18, address(this), hex""); // maxBorrow = 80e18
 
-        // Reenter another 50e18 borrow → two 50e18 borrows exceed the 80e18 cap → outer health check reverts.
-        _armAndExpect(abi.encodeCall(IMorphoBase.borrow, (dp, 50e18, 0, address(this), address(this))));
-        vm.expectRevert(bytes(ErrorsLib.INSUFFICIENT_COLLATERAL));
-        morpho.borrow(dp, 50e18, 0, address(this), address(this));
+        _armAndExpect(abi.encodeCall(IMorphoBase.borrow, (dp, 10e18, 0, address(this), address(this))));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.borrow(dp, 10e18, 0, address(this), address(this));
     }
 
-    function testReentrancyRepayCannotOverRepay() public {
+    function testReentrancyRepayBlocked() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
         collateralToken.setBalance(address(this), 100e18);
         morpho.supplyCollateral(dp, 100e18, address(this), hex"");
         morpho.borrow(dp, 50e18, 0, address(this), address(this)); // debt 50e18
 
-        // Reenter repay 40e18 (paid by the funded rc); the outer's second 40e18 burn underflows the 50e18 debt.
-        _armAndExpect(abi.encodeCall(IMorphoBase.repay, (dp, 40e18, 0, address(this), hex"")));
-        vm.expectRevert(stdError.arithmeticError);
-        morpho.repay(dp, 40e18, 0, address(this), hex"");
+        _armAndExpect(abi.encodeCall(IMorphoBase.repay, (dp, 10e18, 0, address(this), hex"")));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.repay(dp, 10e18, 0, address(this), hex"");
     }
 
-    function testReentrancySupplyCollateralCannotWithdrawUncredited() public {
+    function testReentrancySupplyCollateralBlocked() public {
         collateralToken.setBalance(address(this), 10e18);
-        // Reenter withdrawCollateral before the in-flight supplyCollateral credits it → underflow.
-        _armAndExpect(abi.encodeCall(IMorphoBase.withdrawCollateral, (dp, 10e18, address(this), address(this))));
-        vm.expectRevert(stdError.arithmeticError);
+
+        _armAndExpect(abi.encodeCall(IMorphoBase.supplyCollateral, (dp, 1e18, address(rc), hex"")));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
         morpho.supplyCollateral(dp, 10e18, address(this), hex"");
     }
 
-    function testReentrancyWithdrawCollateralCannotDoubleWithdraw() public {
+    function testReentrancyWithdrawCollateralBlocked() public {
         collateralToken.setBalance(address(this), 100e18);
         morpho.supplyCollateral(dp, 100e18, address(this), hex"");
 
-        _armAndExpect(abi.encodeCall(IMorphoBase.withdrawCollateral, (dp, 100e18, address(this), address(this))));
-        vm.expectRevert(stdError.arithmeticError);
-        morpho.withdrawCollateral(dp, 100e18, address(this), address(this));
+        _armAndExpect(abi.encodeCall(IMorphoBase.withdrawCollateral, (dp, 1e18, address(this), address(this))));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.withdrawCollateral(dp, 10e18, address(this), address(this));
     }
 
-    function testReentrancyLiquidateCannotDoubleLiquidate() public {
+    function testReentrancyLiquidateBlocked() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
         collateralToken.setBalance(BORROWER, 100e18);
@@ -126,26 +125,22 @@ contract ReentrancyIntegrationTest is BaseTest {
         vm.stopPrank();
         oracle.setPrice(ORACLE_PRICE_SCALE / 2); // unhealthy
 
-        // Two *partial* liquidations would both be legitimate (the liquidator pays each time), so we target the
-        // over-seize boundary: the reentrant call seizes the ENTIRE collateral (zeroing it and realizing bad debt
-        // → borrowShares = 0), so the outer's precomputed burn underflows → atomic revert.
-        _armAndExpect(abi.encodeCall(IMorphoBase.liquidate, (dp, BORROWER, 100e18, 0, hex"")));
+        _armAndExpect(abi.encodeCall(IMorphoBase.liquidate, (dp, BORROWER, 10e18, 0, hex"")));
         loanToken.setBalance(address(this), 100e18);
-        vm.expectRevert(stdError.arithmeticError);
-        morpho.liquidate(dp, BORROWER, 100e18, 0, hex"");
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.liquidate(dp, BORROWER, 10e18, 0, hex"");
     }
 
-    function testReentrancyAccrueInterestCannotOverWithdraw() public {
-        loanToken.setBalance(address(this), 100e18);
-        morpho.supply(dp, 100e18, 0, address(this), hex"");
-
-        // Reenter a withdraw larger than the supply → underflow, even though entered via accrueInterest.
-        _armAndExpect(abi.encodeCall(IMorphoBase.withdraw, (dp, 200e18, 0, address(this), address(this))));
-        vm.expectRevert(stdError.arithmeticError);
+    function testReentrancyAccrueInterestBlocked() public {
+        bytes memory reentry = abi.encodeCall(IMorphoBase.accrueInterest, (dp));
+        rc.arm(reentry);
+        // The outer call has identical calldata, so the dispatch control expects two matching calls.
+        vm.expectCall(address(morpho), reentry, 2);
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
         morpho.accrueInterest(dp);
     }
 
-    function testReentrancyDeleverageCannotDoubleSpend() public {
+    function testReentrancyDeleverageBlockedEvenWithinLimits() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
         collateralToken.setBalance(BORROWER, 200e18);
@@ -154,39 +149,42 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.borrow(dp, 100e18, 0, BORROWER, BORROWER); // free liquidity 0
         vm.stopPrank();
 
-        // Reenter the same 0.7 slice: burned once, the outer's second burn underflows → atomic revert.
-        uint256 slice = 70e18 * SharesMathLib.VIRTUAL_SHARES;
+        // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
+        uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
         _armAndExpect(abi.encodeCall(ILidoBlue.deleverage, (dp, slice, BORROWER, address(this), RECEIVER)));
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
         _lido().deleverage(dp, slice, BORROWER, address(this), RECEIVER);
     }
 
-    function testReentrancyDeleverageWithinLimitsStaysConsistent() public {
+    function testReentrancyFlashLoanBlocked() public {
+        loanToken.setBalance(address(this), 110e18);
+        morpho.supply(dp, 100e18, 0, address(this), hex"");
+
+        // flashLoan dispatches no hook of its own but is still locked out while one is executing.
+        _armAndExpect(abi.encodeCall(IMorphoBase.flashLoan, (address(loanToken), 1e18, hex"")));
+        vm.expectRevert(bytes(LidoBlueErrorsLib.HOOK_REENTRANCY));
+        morpho.supply(dp, 10e18, 0, address(this), hex"");
+    }
+
+    function testCallbackAfterHookCanReenter() public {
+        // The lock spans only the controller call: a Morpho callback, issued after the hook completed
+        // and the state was written, can still reenter (the upstream leverage pattern).
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
-        collateralToken.setBalance(BORROWER, 200e18);
-        vm.startPrank(BORROWER);
-        morpho.supplyCollateral(dp, 200e18, BORROWER, hex"");
-        morpho.borrow(dp, 100e18, 0, BORROWER, BORROWER);
-        vm.stopPrank();
+        collateralToken.setBalance(address(this), 100e18);
 
-        // Two 0.3 slices (reentrant + outer) sum to 0.6 < the full balance: both apply, result == one 0.6 cut.
-        uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
-        _armAndExpect(abi.encodeCall(ILidoBlue.deleverage, (dp, slice, BORROWER, address(this), RECEIVER)));
+        morpho.supplyCollateral(dp, 100e18, address(this), abi.encode(uint256(10e18)));
 
-        uint256 lenderSharesBefore = morpho.supplyShares(did, address(this));
-        uint256 borrowSharesBefore = morpho.borrowShares(did, BORROWER);
-        uint256 collateralBefore = morpho.collateral(did, BORROWER);
-
-        _lido().deleverage(dp, slice, BORROWER, address(this), RECEIVER);
-
-        assertEq(morpho.supplyShares(did, address(this)), lenderSharesBefore - 2 * slice, "lender shares: 2 slices");
+        assertEq(morpho.collateral(did, address(this)), 100e18, "collateral credited");
         assertEq(
-            morpho.borrowShares(did, BORROWER),
-            borrowSharesBefore - 60e18 * SharesMathLib.VIRTUAL_SHARES,
-            "borrow shares: 2 slices"
+            morpho.borrowShares(did, address(this)),
+            10e18 * SharesMathLib.VIRTUAL_SHARES,
+            "borrow from the callback applied"
         );
-        assertEq(morpho.collateral(did, BORROWER), collateralBefore - 60e18, "collateral: 2x30e18 seized");
-        assertEq(collateralToken.balanceOf(RECEIVER), 60e18, "receiver got 2x30e18");
+    }
+
+    function onMorphoSupplyCollateral(uint256, bytes calldata data) external {
+        uint256 borrowAssets = abi.decode(data, (uint256));
+        morpho.borrow(dp, borrowAssets, 0, address(this), address(this));
     }
 }
