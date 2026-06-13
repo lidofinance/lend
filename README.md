@@ -10,7 +10,7 @@ Morpho Blue also offers a convenient developer experience with a singleton imple
 ## This fork
 
 This repository (`morpho-lido-blue`) is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, adapted for the Lido Lending product and imported by the product repository as a subrepository.
-The core contract `src/Morpho.sol` is renamed to `src/LidoLend.sol` and extended with optional per-market controllers, controller action hooks, a `redeemCollateral` settlement primitive, and an upgradeable-proxy initializer.
+The core contract `src/Morpho.sol` is renamed to `src/LidoLend.sol` and extended with optional per-market controllers, controller action hooks, a settlement primitive (`settle`), and an upgradeable-proxy initializer.
 Unlike upstream, market creation is owner-gated in this fork (the description above applies to upstream Morpho Blue).
 
 Inherited Morpho Blue source files are used under `GPL-2.0-or-later`.

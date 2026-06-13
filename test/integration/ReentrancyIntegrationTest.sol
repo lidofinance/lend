@@ -141,7 +141,7 @@ contract ReentrancyIntegrationTest is BaseTest {
         morpho.accrueInterest(dp);
     }
 
-    function testReentrancyDeleverageBlockedEvenWithinLimits() public {
+    function testReentrancySettleBlockedEvenWithinLimits() public {
         loanToken.setBalance(address(this), 100e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
         collateralToken.setBalance(BORROWER, 200e18);
@@ -152,9 +152,9 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
         uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
-        _armAndExpect(abi.encodeCall(ILidoLend.redeemCollateral, (dp, slice, BORROWER, address(this), RECEIVER)));
+        _armAndExpect(abi.encodeCall(ILidoLend.settle, (dp, 0, slice, address(this), BORROWER, RECEIVER)));
         vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
-        _lido().redeemCollateral(dp, slice, BORROWER, address(this), RECEIVER);
+        _lido().settle(dp, 0, slice, address(this), BORROWER, RECEIVER);
     }
 
     function testHooklessMarketActionAllowedDuringHook() public {

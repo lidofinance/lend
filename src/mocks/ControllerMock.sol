@@ -22,8 +22,8 @@ contract ControllerMock is ILidoLendMarketController {
 
     mapping(uint8 => bool) public revertOn;
 
-    constructor(Id marketId) {
-        _marketId = Id.unwrap(marketId);
+    constructor(Id marketId_) {
+        _marketId = Id.unwrap(marketId_);
     }
 
     function setRevertOn(HookEvent hookEvent, bool value) external {

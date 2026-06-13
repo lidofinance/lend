@@ -11,7 +11,7 @@ import {SharesMathLib} from "../libraries/SharesMathLib.sol";
 import {MathLib} from "../libraries/MathLib.sol";
 
 /// @title EnforcingControllerMock
-/// @notice Controller that permits a `redeemCollateral` cut only if the borrower stays solvent afterwards
+/// @notice Controller that permits a `settle` cut only if the borrower stays solvent afterwards
 ///         (post-cut collateral value >= post-cut debt). This encodes the guarantee the real
 ///         `LidoMarketController` must provide, so the invariant suite can assert "core + a
 ///         solvency-enforcing controller never creates bad debt". All other hooks are permissive.
@@ -24,8 +24,8 @@ contract EnforcingControllerMock is ILidoLendMarketController {
     IMorpho internal immutable _morpho;
     IOracle internal immutable _oracle;
 
-    constructor(Id marketId, address morpho_, address oracle_) {
-        _marketId = Id.unwrap(marketId);
+    constructor(Id marketId_, address morpho_, address oracle_) {
+        _marketId = Id.unwrap(marketId_);
         _morpho = IMorpho(morpho_);
         _oracle = IOracle(oracle_);
     }
@@ -35,10 +35,9 @@ contract EnforcingControllerMock is ILidoLendMarketController {
     }
 
     function on(Id id, HookEvent hookEvent, bytes calldata data) external view {
-        if (hookEvent != HookEvent.Deleverage) return;
+        if (hookEvent != HookEvent.Settle) return;
 
-        ILidoLendMarketController.DeleverageHookData memory d =
-            abi.decode(data, (ILidoLendMarketController.DeleverageHookData));
+        ILidoLendMarketController.SettleHookData memory d = abi.decode(data, (ILidoLendMarketController.SettleHookData));
 
         // The hook fires before the core writes state, so these reads are the pre-cut position.
         // The core has already checked collateralSeized <= collateral and the burn <= debt.
@@ -47,7 +46,7 @@ contract EnforcingControllerMock is ILidoLendMarketController {
             .toAssetsUp(_morpho.totalBorrowAssets(id), _morpho.totalBorrowShares(id));
 
         uint256 postCollateralValue = (collateral - d.collateralSeized).mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
-        uint256 postDebt = debt > d.assetsToCancel ? debt - d.assetsToCancel : 0;
+        uint256 postDebt = debt > d.debtCanceled ? debt - d.debtCanceled : 0;
 
         require(postCollateralValue >= postDebt, "controller: would be insolvent");
     }

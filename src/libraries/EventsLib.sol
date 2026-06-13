@@ -154,19 +154,19 @@ library EventsLib {
     /// @param controller The bound controller.
     event SetMarketController(Id indexed id, address indexed controller);
 
-    /// @notice Emitted when `redeemCollateral` is enabled for a market at creation.
+    /// @notice Emitted when `settle` is enabled for a market at creation.
     /// @param id The market id.
-    event EnableDeleverage(Id indexed id);
+    event EnableSettlement(Id indexed id);
 
-    /// @notice Emitted on a successful `redeemCollateral`.
+    /// @notice Emitted on a successful `settle`.
     /// @param id The market id.
-    /// @param caller The caller of `redeemCollateral`.
+    /// @param caller The caller of `settle`.
     /// @param onBehalf The supply-side account whose shares are burned.
     /// @param borrower The borrower whose debt and collateral are reduced.
     /// @param supplyShares The supply shares burned from `onBehalf`.
     /// @param collateralSeized The collateral seized from `borrower` and sent to the receiver.
     /// @param debtCanceled The borrow assets canceled from `borrower`.
-    event Deleverage(
+    event Settle(
         Id indexed id,
         address indexed caller,
         address indexed onBehalf,

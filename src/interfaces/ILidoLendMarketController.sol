@@ -19,7 +19,7 @@ interface ILidoLendMarketController {
         WithdrawCollateral,
         Liquidate,
         AccrueInterest,
-        Deleverage
+        Settle
     }
 
     struct SupplyHookData {
@@ -76,12 +76,12 @@ interface ILidoLendMarketController {
         uint256 repaidShares;
     }
 
-    struct DeleverageHookData {
+    struct SettleHookData {
         address caller;
         address onBehalf;
         address borrower;
         address receiver;
-        uint256 assetsToCancel; // computed in core (debtCanceled)
+        uint256 debtCanceled; // computed in core; borrow assets canceled against the burned supply shares
         uint256 collateralSeized; // computed in core; controller debits buckets by exactly this (lockstep with raw)
     }
 

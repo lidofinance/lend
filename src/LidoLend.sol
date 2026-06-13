@@ -39,7 +39,7 @@ import {ILidoLend} from "./interfaces/ILidoLend.sol";
 /// @notice Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
 ///      Optional controllers can enforce additional policy through action hooks. The
-///      `redeemCollateral` extension is core functionality: with no controller it uses the
+///      `settle` extension is core functionality: with no controller it uses the
 ///      core default rules, and with a controller it can be restricted further by market policy.
 contract LidoLend is ILidoLend {
     using MathLib for uint128;
@@ -85,9 +85,9 @@ contract LidoLend is ILidoLend {
     /// @inheritdoc ILidoLend
     mapping(Id => address) public marketController;
     /// @inheritdoc ILidoLend
-    mapping(Id => bool) public deleverageEnabled;
+    mapping(Id => bool) public isSettlementEnabled;
     /// @inheritdoc ILidoLend
-    bool public initialized;
+    bool public isInitialized;
 
     /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
     ///      persistent slot, so the upgrade-safe layout is unaffected.
@@ -97,14 +97,14 @@ contract LidoLend is ILidoLend {
 
     /// @dev Petrifies the implementation; only a proxy can call `initialize`.
     constructor() {
-        initialized = true;
+        isInitialized = true;
     }
 
     /// @inheritdoc ILidoLend
     function initialize(address newOwner) external {
-        require(!initialized, ErrorsLib.ALREADY_INITIALIZED);
+        require(!isInitialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-        initialized = true;
+        isInitialized = true;
         owner = newOwner;
         emit EventsLib.SetOwner(newOwner);
     }
@@ -161,22 +161,21 @@ contract LidoLend is ILidoLend {
     }
 
     /// @inheritdoc ILidoLend
-    function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage)
+    function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement)
         external
         onlyOwner
     {
         require(controller != address(0), ErrorsLib.ZERO_ADDRESS);
-        _createMarket(marketParams, controller, enableDeleverage);
+        _createMarket(marketParams, controller, enableSettlement);
     }
 
-    /// @dev Implements both `createMarket` overloads. The `controller` and `redeemCollateral` opt-in cannot be
+    /// @dev Implements both `createMarket` overloads. The `controller` and settlement opt-in cannot be
     ///      changed after creation. Marks the market's `irm` and `lltv` as enabled on first use: the
     ///      standalone `enableIrm`/`enableLltv` are removed in this fork since `createMarket` is `onlyOwner`.
-    function _createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) internal {
+    function _createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) internal {
         Id id = marketParams.id();
         require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
-        require(controller != address(0) || !enableDeleverage, ErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
 
         if (!isIrmEnabled[marketParams.irm]) {
             isIrmEnabled[marketParams.irm] = true;
@@ -199,9 +198,9 @@ contract LidoLend is ILidoLend {
             marketController[id] = controller;
             emit EventsLib.SetMarketController(id, controller);
 
-            if (enableDeleverage) {
-                deleverageEnabled[id] = true;
-                emit EventsLib.EnableDeleverage(id);
+            if (enableSettlement) {
+                isSettlementEnabled[id] = true;
+                emit EventsLib.EnableSettlement(id);
             }
         }
 
@@ -447,6 +446,77 @@ contract LidoLend is ILidoLend {
         IERC20(marketParams.collateralToken).safeTransfer(receiver, assets);
     }
 
+    /* SETTLEMENT */
+
+    /// @inheritdoc ILidoLend
+    function settle(
+        MarketParams memory marketParams,
+        uint256 supplyAssets,
+        uint256 supplyShares,
+        address onBehalf,
+        address borrower,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+        Id id = marketParams.id();
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
+        require(UtilsLib.exactlyOneZero(supplyAssets, supplyShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
+
+        _accrueInterest(marketParams, id);
+
+        if (supplyAssets > 0) {
+            supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        } else {
+            supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        }
+
+        // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
+        debtCanceled = supplyAssets;
+        require(debtCanceled > _availableLiquidity(id), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
+
+        uint256 collateralPrice = IOracle(marketParams.oracle).price();
+        uint256 borrowerRawCollateral = position[id][borrower].collateral;
+        require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
+
+        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        require(collateralSeized != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        require(collateralSeized <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
+
+        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Settle,
+            abi.encode(
+                ILidoLendMarketController.SettleHookData({
+                    caller: msg.sender,
+                    onBehalf: onBehalf,
+                    borrower: borrower,
+                    receiver: receiver,
+                    debtCanceled: debtCanceled,
+                    collateralSeized: collateralSeized
+                })
+            )
+        );
+
+        position[id][onBehalf].supplyShares -= supplyShares;
+        market[id].totalSupplyShares -= supplyShares.toUint128();
+        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
+
+        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
+
+        position[id][borrower].collateral -= collateralSeized.toUint128();
+
+        emit EventsLib.Settle(id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled);
+
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
+    }
+
     /* LIQUIDATION */
 
     /// @inheritdoc IMorphoBase
@@ -529,69 +599,6 @@ contract LidoLend is ILidoLend {
         IERC20(marketParams.loanToken).safeTransferFrom(msg.sender, address(this), repaidAssets);
 
         return (seizedAssets, repaidAssets);
-    }
-
-    /* DELEVERAGE */
-
-    /// @inheritdoc ILidoLend
-    function redeemCollateral(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address onBehalf,
-        address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
-        Id id = marketParams.id();
-        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(deleverageEnabled[id], ErrorsLib.DELEVERAGE_DISABLED);
-        require(supplyShares != 0, ErrorsLib.ZERO_SHARES);
-        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
-        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
-
-        _accrueInterest(marketParams, id);
-
-        debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), ErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
-
-        uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        require(position[id][borrower].borrowShares != 0, ErrorsLib.DELEVERAGE_NO_DEBT);
-
-        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(collateralSeized != 0, ErrorsLib.DELEVERAGE_SLICE_TOO_SMALL);
-        require(collateralSeized <= borrowerRawCollateral, ErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL);
-
-        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.DELEVERAGE_EXCEEDS_DEBT);
-
-        _hook(
-            id,
-            ILidoLendMarketController.HookEvent.Deleverage,
-            abi.encode(
-                ILidoLendMarketController.DeleverageHookData({
-                    caller: msg.sender,
-                    onBehalf: onBehalf,
-                    borrower: borrower,
-                    receiver: receiver,
-                    assetsToCancel: debtCanceled,
-                    collateralSeized: collateralSeized
-                })
-            )
-        );
-
-        position[id][onBehalf].supplyShares -= supplyShares;
-        market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
-
-        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
-
-        position[id][borrower].collateral -= collateralSeized.toUint128();
-
-        emit EventsLib.Deleverage(id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled);
-
-        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
     }
 
     /* FLASH LOANS */

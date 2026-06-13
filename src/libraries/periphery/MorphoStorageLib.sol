@@ -21,8 +21,8 @@ library MorphoStorageLib {
     uint256 internal constant ID_TO_MARKET_PARAMS_SLOT = 8;
     // Fork-added slots (LidoLend), appended after upstream storage; see FORK_NOTES.md "Storage layout".
     uint256 internal constant MARKET_CONTROLLER_SLOT = 9;
-    uint256 internal constant DELEVERAGE_ENABLED_SLOT = 10;
-    uint256 internal constant INITIALIZED_SLOT = 11;
+    uint256 internal constant IS_SETTLEMENT_ENABLED_SLOT = 10;
+    uint256 internal constant IS_INITIALIZED_SLOT = 11;
 
     /* SLOT OFFSETS */
 
@@ -115,11 +115,11 @@ library MorphoStorageLib {
         return keccak256(abi.encode(id, MARKET_CONTROLLER_SLOT));
     }
 
-    function deleverageEnabledSlot(Id id) internal pure returns (bytes32) {
-        return keccak256(abi.encode(id, DELEVERAGE_ENABLED_SLOT));
+    function isSettlementEnabledSlot(Id id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, IS_SETTLEMENT_ENABLED_SLOT));
     }
 
-    function initializedSlot() internal pure returns (bytes32) {
-        return bytes32(INITIALIZED_SLOT);
+    function isInitializedSlot() internal pure returns (bytes32) {
+        return bytes32(IS_INITIALIZED_SLOT);
     }
 }

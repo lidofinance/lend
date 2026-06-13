@@ -16,8 +16,8 @@ contract ReentrantControllerMock is ILidoLendMarketController {
     bytes public reentryCall;
     bool internal _entered;
 
-    constructor(Id marketId, address core_) {
-        _marketId = Id.unwrap(marketId);
+    constructor(Id marketId_, address core_) {
+        _marketId = Id.unwrap(marketId_);
         core = core_;
     }
 

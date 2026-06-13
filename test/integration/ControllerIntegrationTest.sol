@@ -9,22 +9,22 @@ contract ControllerIntegrationTest is BaseTestWithController {
 
     uint8 internal constant SUPPLY = uint8(ILidoLendMarketController.HookEvent.Supply);
     uint8 internal constant BORROW = uint8(ILidoLendMarketController.HookEvent.Borrow);
-    uint8 internal constant DELEVERAGE = uint8(ILidoLendMarketController.HookEvent.Deleverage);
+    uint8 internal constant SETTLE = uint8(ILidoLendMarketController.HookEvent.Settle);
 
     function testCreateMarketBindsController() public {
         assertEq(LidoLend(address(morpho)).marketController(id), address(controller), "controller bound");
-        assertTrue(LidoLend(address(morpho)).deleverageEnabled(id), "deleverage enabled");
+        assertTrue(LidoLend(address(morpho)).isSettlementEnabled(id), "settlement enabled");
     }
 
     /// @notice The three-argument `createMarket` creates a controlled market: a zero controller is rejected
-    ///         regardless of the deleverage flag (plain markets come from the one-argument call).
-    function testCreateMarketRevertsOnZeroController(bool enableDeleverage) public {
+    ///         regardless of the settlement flag (plain markets come from the one-argument call).
+    function testCreateMarketRevertsOnZeroController(bool enableSettlement) public {
         MarketParams memory params = marketParams; // enabled irm/lltv; fresh oracle => uncreated id
         params.oracle = makeAddr("FreshOracle");
 
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
         vm.prank(OWNER);
-        ILidoLend(address(morpho)).createMarket(params, address(0), enableDeleverage);
+        ILidoLend(address(morpho)).createMarket(params, address(0), enableSettlement);
     }
 
     /// @notice A controller may only be bound to the market whose id it declares via `marketId`.
@@ -66,9 +66,9 @@ contract ControllerIntegrationTest is BaseTestWithController {
     }
 
     /// @notice Happy path: the borrower holds >50% of supply as debt, so ordinary withdraw
-    ///         liquidity is insufficient for the lender's exit. A mid-size slice is cancelled
+    ///         liquidity is insufficient for the lender's exit. A mid-size slice is canceled
     ///         against the borrower's debt and the lender receives the seized collateral.
-    function testDeleverageHappyPath() public {
+    function testSettleHappyPath() public {
         uint256 supplied = 1e18;
         loanToken.setBalance(address(this), supplied);
         morpho.supply(marketParams, supplied, 0, address(this), hex"");
@@ -89,12 +89,12 @@ contract ControllerIntegrationTest is BaseTestWithController {
         uint256 slice = lenderShares / 2;
 
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoLend(address(morpho)).redeemCollateral(marketParams, slice, BORROWER, address(this), RECEIVER);
+            ILidoLend(address(morpho)).settle(marketParams, 0, slice, address(this), BORROWER, RECEIVER);
 
-        assertGt(debtCanceled, 0.2e18, "debt cancelled exceeds prior liquidity (gate cleared)");
+        assertGt(debtCanceled, 0.2e18, "debt canceled exceeds prior liquidity (gate cleared)");
         assertGt(collateralSeized, 0, "collateral seized");
-        // Oracle price is 1:1 (ORACLE_PRICE_SCALE), so seizure equals the cancelled debt.
-        assertEq(collateralSeized, debtCanceled, "seizure matches cancelled debt at 1:1 price");
+        // Oracle price is 1:1 (ORACLE_PRICE_SCALE), so seizure equals the canceled debt.
+        assertEq(collateralSeized, debtCanceled, "seizure matches canceled debt at 1:1 price");
 
         assertEq(morpho.supplyShares(id, address(this)), lenderShares - slice, "lender shares burned");
         assertLt(morpho.borrowShares(id, BORROWER), borrowSharesBefore, "borrower debt reduced");
@@ -102,7 +102,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
             morpho.collateral(id, BORROWER), borrowerCollateralBefore - collateralSeized, "borrower collateral debited"
         );
         assertEq(collateralToken.balanceOf(RECEIVER), collateralSeized, "receiver got seized collateral");
-        assertEq(uint8(controller.lastEvent()), DELEVERAGE, "last hook is Deleverage");
-        assertEq(controller.eventCount(DELEVERAGE), 1, "deleverage hook fired once");
+        assertEq(uint8(controller.lastEvent()), SETTLE, "last hook is Settle");
+        assertEq(controller.eventCount(SETTLE), 1, "settlement hook fired once");
     }
 }

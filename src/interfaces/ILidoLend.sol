@@ -16,7 +16,7 @@ interface ILidoLend is IMorphoStaticTyping {
     /// @notice Whether the contract is initialized.
     /// @dev The implementation is petrified to `true` by its constructor; a proxy starts at `false`
     /// and flips on its one-shot `initialize` call.
-    function initialized() external view returns (bool);
+    function isInitialized() external view returns (bool);
 
     /// @notice One-shot initializer setting `newOwner` as `owner`. Called by the proxy at deploy time.
     /// @dev Fork-added for the upgradeable-proxy deployment: the implementation is petrified by its
@@ -24,32 +24,37 @@ interface ILidoLend is IMorphoStaticTyping {
     /// @param newOwner The new owner of the contract.
     function initialize(address newOwner) external;
 
-    /// @notice Creates the market `marketParams` as a controlled market, binding `controller` and the `redeemCollateral`
-    /// opt-in.
+    /// @notice Creates the market `marketParams` as a controlled market, binding `controller` and the
+    /// `settle` opt-in.
     /// @dev Fork-added overload; `onlyOwner` like the single-argument `createMarket`, which is the only way to
-    /// create a market without a controller. The controller and `redeemCollateral` opt-in cannot be changed after creation.
-    /// @param marketParams The market to create.
+    /// create a market without a controller. The controller and `settle` opt-in cannot be changed after
+    /// creation. @param marketParams The market to create.
     /// @param controller The controller to bind; must be non-zero and built for this market.
-    /// @param enableDeleverage Whether `redeemCollateral` is enabled for this market.
-    function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) external;
+    /// @param enableSettlement Whether `settle` is enabled for this market.
+    function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) external;
 
     /// @notice Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
-    /// @dev Fork-added single-borrower primitive; enabled per market at creation. Callable only by `onBehalf` or
-    /// an address authorized by `onBehalf`, and only when ordinary withdraw liquidity is insufficient to cover the
-    /// cancelled debt. The bound controller's `Deleverage` hook enforces borrower eligibility and the per-cut
-    /// slice cap, and may revert. Reverts while another action's controller hook is executing.
-    /// @param marketParams The market to redeem on.
+    /// @dev Fork-added single-borrower primitive; enabled per market at creation. Either `supplyAssets` or
+    /// `supplyShares` must be zero; the loan-asset value of the burned supply position is the borrower debt
+    /// canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and only when ordinary
+    /// withdraw liquidity is insufficient to cover the canceled debt. The bound controller's `Settle`
+    /// hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's
+    /// controller hook is executing.
+    /// @param marketParams The market to settle on.
+    /// @param supplyAssets The loan-asset value of `onBehalf`'s supply position to settle (and debt to cancel).
     /// @param supplyShares The amount of supply shares to burn from `onBehalf`.
-    /// @param borrower The borrower whose debt is cancelled and collateral seized.
     /// @param onBehalf The address whose supply shares are burned.
+    /// @param borrower The borrower whose debt is canceled and collateral seized.
     /// @param receiver The address that receives the seized collateral.
-    /// @return collateralSeized The amount of collateral seized.
-    /// @return debtCanceled The amount of borrower debt cancelled.
-    function redeemCollateral(
+    /// @return collateralSeized The collateral-token amount seized and sent to `receiver`.
+    /// @return debtCanceled The loan-token amount of `borrower` debt canceled (equals the settled supply value at par,
+    /// not a `borrowShares` count).
+    function settle(
         MarketParams memory marketParams,
+        uint256 supplyAssets,
         uint256 supplyShares,
-        address borrower,
         address onBehalf,
+        address borrower,
         address receiver
     ) external returns (uint256 collateralSeized, uint256 debtCanceled);
 
@@ -57,7 +62,7 @@ interface ILidoLend is IMorphoStaticTyping {
     /// @dev Set only at market creation; immutable thereafter.
     function marketController(Id id) external view returns (address);
 
-    /// @notice Whether `redeemCollateral` is enabled for the market corresponding to `id`.
+    /// @notice Whether `settle` is enabled for the market corresponding to `id`.
     /// @dev Set only at market creation; immutable thereafter.
-    function deleverageEnabled(Id id) external view returns (bool);
+    function isSettlementEnabled(Id id) external view returns (bool);
 }
