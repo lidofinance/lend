@@ -38,9 +38,9 @@ import {ILidoLend} from "./interfaces/ILidoLend.sol";
 /// @author Morpho Labs. Modified by Lido.
 /// @notice Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
-///      Optional controllers can enforce additional policy through action hooks. The
-///      `settle` extension is core functionality: with no controller it uses the
-///      core default rules, and with a controller it can be restricted further by market policy.
+///      Optional per-market controllers can enforce additional policy through action hooks. The
+///      `settle` extension is enabled per market at creation, and only on a market that has a
+///      controller, so the controller's policy can govern who may be settled and by how much.
 contract LidoLend is ILidoLend {
     using MathLib for uint128;
     using MathLib for uint256;
@@ -95,7 +95,7 @@ contract LidoLend is ILidoLend {
 
     /* INITIALIZER */
 
-    /// @dev Petrifies the implementation; only a proxy can call `initialize`.
+    /// @dev Petrifies the implementation, so only a proxy can call `initialize`.
     constructor() {
         isInitialized = true;
     }
@@ -731,9 +731,9 @@ contract LidoLend is ILidoLend {
     /* CONTROLLER HELPERS */
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
-    ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
+    ///      core fork surface minimal, and the controller decodes per-event in its `on()` handler.
     /// @dev Doubles as the reentrancy gate, scoped to where hooks exist: on a market with a
-    ///      controller, entering while another controller hook is in flight reverts; a market with
+    ///      controller, entering while another controller hook is in flight reverts. A market with
     ///      no controller is never gated. Nested hooks are impossible: a controlled market reverts
     ///      here before dispatching its own hook. The lock is released before the calling function
     ///      writes state and runs Morpho callbacks.

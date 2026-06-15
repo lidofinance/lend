@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.5.0;
 
+/// @notice A market identifier, the `keccak256` hash of a `MarketParams`.
 type Id is bytes32;
 
+/// @notice The immutable parameters that define a market and, hashed, its `Id`.
+/// @param loanToken The token lenders supply and borrowers borrow.
+/// @param collateralToken The token borrowers post as collateral.
+/// @param oracle Prices the collateral in loan-token terms.
+/// @param irm The interest rate model.
+/// @param lltv The liquidation loan-to-value, in WAD.
 struct MarketParams {
     address loanToken;
     address collateralToken;
@@ -11,18 +18,29 @@ struct MarketParams {
     uint256 lltv;
 }
 
+/// @notice A single account's position in one market.
 /// @dev Warning: For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest
 /// accrual.
+/// @param supplyShares The account's supply shares.
+/// @param borrowShares The account's borrow shares.
+/// @param collateral The account's collateral, in collateral-token units.
 struct Position {
     uint256 supplyShares;
     uint128 borrowShares;
     uint128 collateral;
 }
 
+/// @notice A market's aggregate accounting state.
 /// @dev Warning: `totalSupplyAssets` does not contain the accrued interest since the last interest accrual.
 /// @dev Warning: `totalBorrowAssets` does not contain the accrued interest since the last interest accrual.
 /// @dev Warning: `totalSupplyShares` does not contain the additional shares accrued by `feeRecipient` since the last
 /// interest accrual.
+/// @param totalSupplyAssets The total loan assets supplied to the market.
+/// @param totalSupplyShares The total supply shares outstanding.
+/// @param totalBorrowAssets The total loan assets borrowed from the market.
+/// @param totalBorrowShares The total borrow shares outstanding.
+/// @param lastUpdate The timestamp of the last interest accrual.
+/// @param fee The market fee, in WAD, capped by `MAX_FEE`.
 struct Market {
     uint128 totalSupplyAssets;
     uint128 totalSupplyShares;
@@ -32,6 +50,12 @@ struct Market {
     uint128 fee;
 }
 
+/// @notice An EIP-712 authorization message for `setAuthorizationWithSig`.
+/// @param authorizer The account granting or revoking the authorization.
+/// @param authorized The account being authorized.
+/// @param isAuthorized Whether `authorized` becomes authorized for `authorizer`.
+/// @param nonce The authorizer's current nonce, which blocks replay.
+/// @param deadline The latest timestamp at which the signature is valid.
 struct Authorization {
     address authorizer;
     address authorized;
@@ -40,6 +64,10 @@ struct Authorization {
     uint256 deadline;
 }
 
+/// @notice The `v`, `r`, and `s` components of an ECDSA signature.
+/// @param v The recovery identifier.
+/// @param r The `r` component.
+/// @param s The `s` component.
 struct Signature {
     uint8 v;
     bytes32 r;
@@ -61,7 +89,7 @@ interface IMorphoBase {
     /// @notice The owner of the contract.
     /// @dev It has the power to change the owner.
     /// @dev It has the power to set fees on markets and set the fee recipient.
-    /// @dev It has the power to create markets; creating a market enables its IRM and LLTV, and neither can be
+    /// @dev It has the power to create markets. Creating a market enables its IRM and LLTV, and neither can be
     /// disabled afterwards.
     function owner() external view returns (address);
 
@@ -132,7 +160,7 @@ interface IMorphoBase {
     /// @dev Warning: `createMarket` is `onlyOwner` in this fork, whereas upstream Morpho market creation is
     /// permissionless. Creating a market marks its `irm` and `lltv` as enabled on first use, emitting
     /// `EnableIrm`/`EnableLltv` (the standalone `enableIrm`/`enableLltv` are removed in this fork). This function
-    /// creates a plain market with no controller; the three-argument overload in `ILidoLend` creates a controlled
+    /// creates a plain market with no controller. The three-argument overload in `ILidoLend` creates a controlled
     /// one.
     function createMarket(MarketParams memory marketParams) external;
 
@@ -145,8 +173,8 @@ interface IMorphoBase {
     /// @dev Supplying an amount of shares may lead to supply more or fewer assets than expected due to slippage.
     /// Consider using the `assets` parameter to avoid this.
     /// @dev Warning: On a market with a controller, this function calls the controller's `Supply` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to supply assets to.
     /// @param assets The amount of assets to supply.
     /// @param shares The amount of shares to mint.
@@ -169,8 +197,8 @@ interface IMorphoBase {
     /// @dev It is advised to use the `shares` input when withdrawing the full position to avoid reverts due to
     /// conversion roundings between shares and assets.
     /// @dev Warning: On a market with a controller, this function calls the controller's `Withdraw` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to withdraw assets from.
     /// @param assets The amount of assets to withdraw.
     /// @param shares The amount of shares to burn.
@@ -195,8 +223,8 @@ interface IMorphoBase {
     /// @dev Borrowing an amount of shares may lead to borrow fewer assets than expected due to slippage.
     /// Consider using the `assets` parameter to avoid this.
     /// @dev Warning: On a market with a controller, this function calls the controller's `Borrow` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to borrow assets from.
     /// @param assets The amount of assets to borrow.
     /// @param shares The amount of shares to mint.
@@ -220,8 +248,8 @@ interface IMorphoBase {
     /// roundings between shares and assets.
     /// @dev An attacker can front-run a repay with a small repay making the transaction revert for underflow.
     /// @dev Warning: On a market with a controller, this function calls the controller's `Repay` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to repay assets to.
     /// @param assets The amount of assets to repay.
     /// @param shares The amount of shares to burn.
@@ -242,8 +270,8 @@ interface IMorphoBase {
     /// @dev Interest is not accrued since it's not required and it saves gas.
     /// @dev Supplying a large amount can revert for overflow.
     /// @dev Warning: On a market with a controller, this function calls the controller's `SupplyCollateral` hook
-    /// before applying the state changes (no interest is accrued), and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// before applying the state changes (no interest is accrued), and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to supply collateral to.
     /// @param assets The amount of collateral to supply.
     /// @param onBehalf The address that will own the increased collateral position.
@@ -255,8 +283,8 @@ interface IMorphoBase {
     /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
     /// @dev Withdrawing an amount corresponding to more collateral than supplied will revert for underflow.
     /// @dev Warning: On a market with a controller, this function calls the controller's `WithdrawCollateral` hook
-    /// after interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// after interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market to withdraw collateral from.
     /// @param assets The amount of collateral to withdraw.
     /// @param onBehalf The address of the owner of the collateral position.
@@ -272,8 +300,8 @@ interface IMorphoBase {
     /// @dev Repaying more than the borrow balance will underflow and revert without any error message.
     /// @dev An attacker can front-run a liquidation with a small repay making the transaction revert for underflow.
     /// @dev Warning: On a market with a controller, this function calls the controller's `Liquidate` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook;
-    /// the hook itself may revert.
+    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
+    /// The hook itself may revert.
     /// @param marketParams The market of the position.
     /// @param borrower The owner of the position.
     /// @param seizedAssets The amount of collateral to seize.
@@ -310,7 +338,7 @@ interface IMorphoBase {
     /// @dev Warning: Reverts if the signature has already been submitted.
     /// @dev The signature is malleable, but it has no impact on the security here.
     /// @dev The nonce is passed as argument to be able to revert with a different error message.
-    /// @dev Warning: The EIP-712 digest is built from the fork's recomputed `DOMAIN_SEPARATOR()`; signature validity
+    /// @dev Warning: The EIP-712 digest is built from the fork's recomputed `DOMAIN_SEPARATOR()`. Signature validity
     /// around the proxy and chain splits therefore differs from upstream as described on `DOMAIN_SEPARATOR`.
     /// @param authorization The `Authorization` struct.
     /// @param signature The signature.
@@ -318,7 +346,7 @@ interface IMorphoBase {
 
     /// @notice Accrues interest for the given market `marketParams`.
     /// @dev Warning: On a market with a controller, this function calls the controller's `AccrueInterest` hook
-    /// before accruing interest, and reverts when reentered from a controller hook; the hook itself may revert.
+    /// before accruing interest, and reverts when reentered from a controller hook. The hook itself may revert.
     function accrueInterest(MarketParams memory marketParams) external;
 
     /// @notice Returns the data stored on the different `slots`.
