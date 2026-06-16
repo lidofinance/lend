@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import {Id, IMorpho} from "../interfaces/IMorpho.sol";
 import {IOracle} from "../interfaces/IOracle.sol";
-import {ILidoBlueMarketController} from "../interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 import "../libraries/ConstantsLib.sol";
 import {MorphoLib} from "../libraries/periphery/MorphoLib.sol";
@@ -11,11 +11,11 @@ import {SharesMathLib} from "../libraries/SharesMathLib.sol";
 import {MathLib} from "../libraries/MathLib.sol";
 
 /// @title EnforcingControllerMock
-/// @notice Controller that permits a `deleverage` cut only if the borrower stays solvent afterwards
+/// @notice Controller that permits a `settle` cut only if the borrower stays solvent afterwards
 ///         (post-cut collateral value >= post-cut debt). This encodes the guarantee the real
 ///         `LidoMarketController` must provide, so the invariant suite can assert "core + a
 ///         solvency-enforcing controller never creates bad debt". All other hooks are permissive.
-contract EnforcingControllerMock is ILidoBlueMarketController {
+contract EnforcingControllerMock is ILidoLendMarketController {
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
     using MathLib for uint256;
@@ -24,29 +24,20 @@ contract EnforcingControllerMock is ILidoBlueMarketController {
     IMorpho internal immutable _morpho;
     IOracle internal immutable _oracle;
 
-    constructor(Id marketId, address morpho_, address oracle_) {
-        _marketId = Id.unwrap(marketId);
+    constructor(Id marketId_, address morpho_, address oracle_) {
+        _marketId = Id.unwrap(marketId_);
         _morpho = IMorpho(morpho_);
         _oracle = IOracle(oracle_);
     }
 
-    function MARKET_ID() external view returns (Id) {
+    function marketId() external view returns (Id) {
         return Id.wrap(_marketId);
     }
 
-    function nextDeleverageCut() external pure returns (address, uint256) {
-        return (address(0), 0);
-    }
-
-    function allowedSliceFor(address) external pure returns (uint256) {
-        return type(uint256).max;
-    }
-
     function on(Id id, HookEvent hookEvent, bytes calldata data) external view {
-        if (hookEvent != HookEvent.Deleverage) return;
+        if (hookEvent != HookEvent.Settle) return;
 
-        ILidoBlueMarketController.DeleverageHookData memory d =
-            abi.decode(data, (ILidoBlueMarketController.DeleverageHookData));
+        ILidoLendMarketController.SettleHookData memory d = abi.decode(data, (ILidoLendMarketController.SettleHookData));
 
         // The hook fires before the core writes state, so these reads are the pre-cut position.
         // The core has already checked collateralSeized <= collateral and the burn <= debt.
@@ -55,7 +46,7 @@ contract EnforcingControllerMock is ILidoBlueMarketController {
             .toAssetsUp(_morpho.totalBorrowAssets(id), _morpho.totalBorrowShares(id));
 
         uint256 postCollateralValue = (collateral - d.collateralSeized).mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
-        uint256 postDebt = debt > d.assetsToCancel ? debt - d.assetsToCancel : 0;
+        uint256 postDebt = debt > d.debtCanceled ? debt - d.debtCanceled : 0;
 
         require(postCollateralValue >= postDebt, "controller: would be insolvent");
     }

@@ -3,17 +3,17 @@ pragma solidity ^0.8.0;
 
 import "../BaseTest.sol";
 
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract InitializeIntegrationTest is BaseTest {
     function testCannotReinitializeProxy() public {
-        vm.expectRevert(bytes(LidoBlueErrorsLib.ALREADY_INITIALIZED));
-        LidoBlue(address(morpho)).initialize(OWNER);
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
+        LidoLend(address(morpho)).initialize(OWNER);
     }
 
     function testImplementationIsPetrified() public {
-        LidoBlue impl = new LidoBlue();
-        vm.expectRevert(bytes(LidoBlueErrorsLib.ALREADY_INITIALIZED));
+        LidoLend impl = new LidoLend();
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
         impl.initialize(OWNER);
     }
 
@@ -23,7 +23,7 @@ contract InitializeIntegrationTest is BaseTest {
     }
 
     function testDomainSeparatorDiffersFromImplementation() public {
-        LidoBlue impl = new LidoBlue();
+        LidoLend impl = new LidoLend();
         assertTrue(
             morpho.DOMAIN_SEPARATOR() != impl.DOMAIN_SEPARATOR(),
             "proxy and implementation must derive different domain separators"

@@ -2,39 +2,40 @@
 pragma solidity ^0.8.0;
 
 import "../BaseTestWithController.sol";
-import {LidoBlueErrorsLib} from "../../src/libraries/LidoBlueErrorsLib.sol";
+import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 contract ControllerIntegrationTest is BaseTestWithController {
     using MorphoLib for IMorpho;
 
-    uint8 internal constant SUPPLY = uint8(ILidoBlueMarketController.HookEvent.Supply);
-    uint8 internal constant BORROW = uint8(ILidoBlueMarketController.HookEvent.Borrow);
-    uint8 internal constant DELEVERAGE = uint8(ILidoBlueMarketController.HookEvent.Deleverage);
+    uint8 internal constant SUPPLY = uint8(ILidoLendMarketController.HookEvent.Supply);
+    uint8 internal constant BORROW = uint8(ILidoLendMarketController.HookEvent.Borrow);
+    uint8 internal constant SETTLE = uint8(ILidoLendMarketController.HookEvent.Settle);
 
     function testCreateMarketBindsController() public {
-        assertEq(LidoBlue(address(morpho)).marketController(id), address(controller), "controller bound");
-        assertTrue(LidoBlue(address(morpho)).deleverageEnabled(id), "deleverage enabled");
+        assertEq(LidoLend(address(morpho)).marketController(id), address(controller), "controller bound");
+        assertTrue(LidoLend(address(morpho)).isSettlementEnabled(id), "settlement enabled");
     }
 
-    /// @notice Deleverage has no in-core bad-debt backstop, so enabling it without a controller is forbidden.
-    function testCreateMarketRevertsWhenDeleverageEnabledWithoutController() public {
+    /// @notice The three-argument `createMarket` creates a controlled market: a zero controller is rejected
+    ///         regardless of the settlement flag (plain markets come from the one-argument call).
+    function testCreateMarketRevertsOnZeroController(bool enableSettlement) public {
         MarketParams memory params = marketParams; // enabled irm/lltv; fresh oracle => uncreated id
         params.oracle = makeAddr("FreshOracle");
 
-        vm.expectRevert(bytes(LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER));
+        vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(params, address(0), true);
+        ILidoLend(address(morpho)).createMarket(params, address(0), enableSettlement);
     }
 
-    /// @notice A controller may only be bound to the market whose id it declares via `MARKET_ID`.
+    /// @notice A controller may only be bound to the market whose id it declares via `marketId`.
     function testCreateMarketRevertsOnControllerMismatch() public {
         MarketParams memory params = marketParams; // distinct id from the controlled market
         params.oracle = makeAddr("FreshOracle");
 
         // `controller` is bound to `id`, not to `params.id()`.
-        vm.expectRevert(bytes(LidoBlueErrorsLib.CONTROLLER_MISMATCH));
+        vm.expectRevert(bytes(ErrorsLib.CONTROLLER_MISMATCH));
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(params, address(controller), false);
+        ILidoLend(address(morpho)).createMarket(params, address(controller), false);
     }
 
     function testSupplyFiresSupplyHook() public {
@@ -65,9 +66,9 @@ contract ControllerIntegrationTest is BaseTestWithController {
     }
 
     /// @notice Happy path: the borrower holds >50% of supply as debt, so ordinary withdraw
-    ///         liquidity is insufficient for the lender's exit. A mid-size slice is cancelled
+    ///         liquidity is insufficient for the lender's exit. A mid-size slice is canceled
     ///         against the borrower's debt and the lender receives the seized collateral.
-    function testDeleverageHappyPath() public {
+    function testSettleHappyPath() public {
         uint256 supplied = 1e18;
         loanToken.setBalance(address(this), supplied);
         morpho.supply(marketParams, supplied, 0, address(this), hex"");
@@ -88,12 +89,12 @@ contract ControllerIntegrationTest is BaseTestWithController {
         uint256 slice = lenderShares / 2;
 
         (uint256 collateralSeized, uint256 debtCanceled) =
-            ILidoBlue(address(morpho)).deleverage(marketParams, slice, BORROWER, address(this), RECEIVER);
+            ILidoLend(address(morpho)).settle(marketParams, 0, slice, address(this), BORROWER, RECEIVER);
 
-        assertGt(debtCanceled, 0.2e18, "debt cancelled exceeds prior liquidity (gate cleared)");
+        assertGt(debtCanceled, 0.2e18, "debt canceled exceeds prior liquidity (gate cleared)");
         assertGt(collateralSeized, 0, "collateral seized");
-        // Oracle price is 1:1 (ORACLE_PRICE_SCALE), so seizure equals the cancelled debt.
-        assertEq(collateralSeized, debtCanceled, "seizure matches cancelled debt at 1:1 price");
+        // Oracle price is 1:1 (ORACLE_PRICE_SCALE), so seizure equals the canceled debt.
+        assertEq(collateralSeized, debtCanceled, "seizure matches canceled debt at 1:1 price");
 
         assertEq(morpho.supplyShares(id, address(this)), lenderShares - slice, "lender shares burned");
         assertLt(morpho.borrowShares(id, BORROWER), borrowSharesBefore, "borrower debt reduced");
@@ -101,7 +102,7 @@ contract ControllerIntegrationTest is BaseTestWithController {
             morpho.collateral(id, BORROWER), borrowerCollateralBefore - collateralSeized, "borrower collateral debited"
         );
         assertEq(collateralToken.balanceOf(RECEIVER), collateralSeized, "receiver got seized collateral");
-        assertEq(uint8(controller.lastEvent()), DELEVERAGE, "last hook is Deleverage");
-        assertEq(controller.eventCount(DELEVERAGE), 1, "deleverage hook fired once");
+        assertEq(uint8(controller.lastEvent()), SETTLE, "last hook is Settle");
+        assertEq(controller.eventCount(SETTLE), 1, "settlement hook fired once");
     }
 }

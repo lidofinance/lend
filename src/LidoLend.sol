@@ -31,25 +31,33 @@ import {SharesMathLib} from "./libraries/SharesMathLib.sol";
 import {MarketParamsLib} from "./libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
-import {ILidoBlueMarketController} from "./interfaces/ILidoBlueMarketController.sol";
-import {ILidoBlue} from "./interfaces/ILidoBlue.sol";
-import {LidoBlueErrorsLib} from "./libraries/LidoBlueErrorsLib.sol";
-import {LidoBlueEventsLib} from "./libraries/LidoBlueEventsLib.sol";
+import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
+import {ILidoLend} from "./interfaces/ILidoLend.sol";
 
-/// @title LidoBlue
-/// @author Lido Lending contributors. Forked from Morpho Blue by Morpho Labs.
-/// @notice Working-name Morpho Blue fork core with optional per-market controllers.
+/// @title LidoLend
+/// @author Morpho Labs. Modified by Lido.
+/// @notice Morpho Blue fork core with optional per-market controllers.
 /// @dev `Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped.
-///      Optional controllers can enforce additional policy through action hooks. The
-///      `deleverage` extension is core functionality: with no controller it uses the
-///      core default rules, and with a controller it can be restricted further by market policy.
-contract LidoBlue is ILidoBlue {
+///      Optional per-market controllers can enforce additional policy through action hooks. The
+///      `settle` extension is enabled per market at creation, and only on a market that has a
+///      controller, so the controller's policy can govern who may be settled and by how much.
+contract LidoLend is ILidoLend {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
     using SharesMathLib for uint256;
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
+
+    /* DOMAIN SEPARATOR */
+
+    /// @inheritdoc IMorphoBase
+    /// @dev Upstream declares this as an immutable here, computed once in the constructor. The fork
+    ///      recomputes it from `address(this)` on every call so it resolves to the proxy address
+    ///      under delegatecall, instead of being baked into the implementation's bytecode.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+    }
 
     /* STORAGE */
 
@@ -74,40 +82,29 @@ contract LidoBlue is ILidoBlue {
 
     /* FORK STORAGE */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc ILidoLend
     mapping(Id => address) public marketController;
-    /// @inheritdoc ILidoBlue
-    mapping(Id => bool) public deleverageEnabled;
+    /// @inheritdoc ILidoLend
+    mapping(Id => bool) public isSettlementEnabled;
+    /// @inheritdoc ILidoLend
+    bool public isInitialized;
 
     /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
     ///      persistent slot, so the upgrade-safe layout is unaffected.
     bool internal transient _hookInProgress;
 
-    /// @inheritdoc IMorphoBase
-    /// @dev Computed from `address(this)` at call time so it resolves to the proxy address under
-    ///      delegatecall, instead of being baked into the impl's bytecode like the upstream
-    ///      immutable would be.
-    function DOMAIN_SEPARATOR() public view returns (bytes32) {
-        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
-    }
-
     /* INITIALIZER */
 
-    /// @dev One-shot initializer flag. Petrified to `true` by the impl constructor; proxies start
-    ///      at `false` and flip on the first `initialize` call.
-    bool internal _initialized;
-
-    /// @dev Petrifies the implementation; only a proxy can call `initialize`.
+    /// @dev Petrifies the implementation, so only a proxy can call `initialize`.
     constructor() {
-        _initialized = true;
+        isInitialized = true;
     }
 
-    /// @notice One-shot initializer. Called by the proxy at deploy time.
-    /// @param newOwner The new owner of the contract.
+    /// @inheritdoc ILidoLend
     function initialize(address newOwner) external {
-        require(!_initialized, LidoBlueErrorsLib.ALREADY_INITIALIZED);
+        require(!isInitialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-        _initialized = true;
+        isInitialized = true;
         owner = newOwner;
         emit EventsLib.SetOwner(newOwner);
     }
@@ -117,12 +114,6 @@ contract LidoBlue is ILidoBlue {
     /// @dev Reverts if the caller is not the owner.
     modifier onlyOwner() {
         require(msg.sender == owner, ErrorsLib.NOT_OWNER);
-        _;
-    }
-
-    /// @dev Reverts if a controller hook is currently executing.
-    modifier nonHookReentrant() {
-        require(!_hookInProgress, LidoBlueErrorsLib.HOOK_REENTRANCY);
         _;
     }
 
@@ -169,22 +160,22 @@ contract LidoBlue is ILidoBlue {
         _createMarket(marketParams, address(0), false);
     }
 
-    /// @inheritdoc ILidoBlue
-    function createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage)
+    /// @inheritdoc ILidoLend
+    function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement)
         external
         onlyOwner
     {
-        _createMarket(marketParams, controller, enableDeleverage);
+        require(controller != address(0), ErrorsLib.ZERO_ADDRESS);
+        _createMarket(marketParams, controller, enableSettlement);
     }
 
-    /// @dev Implements both `createMarket` overloads. The `controller` and deleverage opt-in cannot be
+    /// @dev Implements both `createMarket` overloads. The `controller` and settlement opt-in cannot be
     ///      changed after creation. Marks the market's `irm` and `lltv` as enabled on first use: the
     ///      standalone `enableIrm`/`enableLltv` are removed in this fork since `createMarket` is `onlyOwner`.
-    function _createMarket(MarketParams memory marketParams, address controller, bool enableDeleverage) internal {
+    function _createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) internal {
         Id id = marketParams.id();
         require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
-        require(controller != address(0) || !enableDeleverage, LidoBlueErrorsLib.DELEVERAGE_REQUIRES_CONTROLLER);
 
         if (!isIrmEnabled[marketParams.irm]) {
             isIrmEnabled[marketParams.irm] = true;
@@ -201,15 +192,15 @@ contract LidoBlue is ILidoBlue {
 
         if (controller != address(0)) {
             require(
-                Id.unwrap(ILidoBlueMarketController(controller).MARKET_ID()) == Id.unwrap(id),
-                LidoBlueErrorsLib.CONTROLLER_MISMATCH
+                Id.unwrap(ILidoLendMarketController(controller).marketId()) == Id.unwrap(id),
+                ErrorsLib.CONTROLLER_MISMATCH
             );
             marketController[id] = controller;
-            emit LidoBlueEventsLib.SetMarketController(id, controller);
+            emit EventsLib.SetMarketController(id, controller);
 
-            if (enableDeleverage) {
-                deleverageEnabled[id] = true;
-                emit LidoBlueEventsLib.EnableDeleverage(id);
+            if (enableSettlement) {
+                isSettlementEnabled[id] = true;
+                emit EventsLib.EnableSettlement(id);
             }
         }
 
@@ -221,14 +212,14 @@ contract LidoBlue is ILidoBlue {
 
     /* SUPPLY MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function supply(
         MarketParams memory marketParams,
         uint256 assets,
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -241,9 +232,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Supply,
+            ILidoLendMarketController.HookEvent.Supply,
             abi.encode(
-                ILidoBlueMarketController.SupplyHookData({
+                ILidoLendMarketController.SupplyHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -262,14 +253,14 @@ contract LidoBlue is ILidoBlue {
         return (assets, shares);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function withdraw(
         MarketParams memory marketParams,
         uint256 assets,
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -284,9 +275,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Withdraw,
+            ILidoLendMarketController.HookEvent.Withdraw,
             abi.encode(
-                ILidoBlueMarketController.WithdrawHookData({
+                ILidoLendMarketController.WithdrawHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -307,14 +298,14 @@ contract LidoBlue is ILidoBlue {
 
     /* BORROW MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function borrow(
         MarketParams memory marketParams,
         uint256 assets,
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -329,9 +320,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Borrow,
+            ILidoLendMarketController.HookEvent.Borrow,
             abi.encode(
-                ILidoBlueMarketController.BorrowHookData({
+                ILidoLendMarketController.BorrowHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
                 })
             )
@@ -351,14 +342,14 @@ contract LidoBlue is ILidoBlue {
         return (assets, shares);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function repay(
         MarketParams memory marketParams,
         uint256 assets,
         uint256 shares,
         address onBehalf,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(assets, shares), ErrorsLib.INCONSISTENT_INPUT);
@@ -371,9 +362,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Repay,
+            ILidoLendMarketController.HookEvent.Repay,
             abi.encode(
-                ILidoBlueMarketController.RepayHookData({
+                ILidoLendMarketController.RepayHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
                 })
             )
@@ -395,10 +386,9 @@ contract LidoBlue is ILidoBlue {
 
     /* COLLATERAL MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes calldata data)
         external
-        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -409,9 +399,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.SupplyCollateral,
+            ILidoLendMarketController.HookEvent.SupplyCollateral,
             abi.encode(
-                ILidoBlueMarketController.SupplyCollateralHookData({
+                ILidoLendMarketController.SupplyCollateralHookData({
                     caller: msg.sender, onBehalf: onBehalf, assets: assets
                 })
             )
@@ -425,10 +415,9 @@ contract LidoBlue is ILidoBlue {
         IERC20(marketParams.collateralToken).safeTransferFrom(msg.sender, address(this), assets);
     }
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
         external
-        nonHookReentrant
     {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
@@ -441,9 +430,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.WithdrawCollateral,
+            ILidoLendMarketController.HookEvent.WithdrawCollateral,
             abi.encode(
-                ILidoBlueMarketController.WithdrawCollateralHookData({
+                ILidoLendMarketController.WithdrawCollateralHookData({
                     caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets
                 })
             )
@@ -457,16 +446,87 @@ contract LidoBlue is ILidoBlue {
         IERC20(marketParams.collateralToken).safeTransfer(receiver, assets);
     }
 
+    /* SETTLEMENT */
+
+    /// @inheritdoc ILidoLend
+    function settle(
+        MarketParams memory marketParams,
+        uint256 supplyAssets,
+        uint256 supplyShares,
+        address onBehalf,
+        address borrower,
+        address receiver
+    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+        Id id = marketParams.id();
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
+        require(UtilsLib.exactlyOneZero(supplyAssets, supplyShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
+
+        _accrueInterest(marketParams, id);
+
+        if (supplyAssets > 0) {
+            supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        } else {
+            supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        }
+
+        // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
+        debtCanceled = supplyAssets;
+        require(debtCanceled > _availableLiquidity(id), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
+
+        uint256 collateralPrice = IOracle(marketParams.oracle).price();
+        uint256 borrowerRawCollateral = position[id][borrower].collateral;
+        require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
+
+        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        require(collateralSeized != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        require(collateralSeized <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
+
+        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Settle,
+            abi.encode(
+                ILidoLendMarketController.SettleHookData({
+                    caller: msg.sender,
+                    onBehalf: onBehalf,
+                    borrower: borrower,
+                    receiver: receiver,
+                    debtCanceled: debtCanceled,
+                    collateralSeized: collateralSeized
+                })
+            )
+        );
+
+        position[id][onBehalf].supplyShares -= supplyShares;
+        market[id].totalSupplyShares -= supplyShares.toUint128();
+        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
+
+        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
+        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
+
+        position[id][borrower].collateral -= collateralSeized.toUint128();
+
+        emit EventsLib.Settle(id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled);
+
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
+    }
+
     /* LIQUIDATION */
 
-    /// @inheritdoc ILidoBlue
+    /// @inheritdoc IMorphoBase
     function liquidate(
         MarketParams memory marketParams,
         address borrower,
         uint256 seizedAssets,
         uint256 repaidShares,
         bytes calldata data
-    ) external nonHookReentrant returns (uint256, uint256) {
+    ) external returns (uint256, uint256) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(UtilsLib.exactlyOneZero(seizedAssets, repaidShares), ErrorsLib.INCONSISTENT_INPUT);
@@ -498,9 +558,9 @@ contract LidoBlue is ILidoBlue {
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.Liquidate,
+            ILidoLendMarketController.HookEvent.Liquidate,
             abi.encode(
-                ILidoBlueMarketController.LiquidateHookData({
+                ILidoLendMarketController.LiquidateHookData({
                     caller: msg.sender, borrower: borrower, seizedAssets: seizedAssets, repaidShares: repaidShares
                 })
             )
@@ -541,75 +601,10 @@ contract LidoBlue is ILidoBlue {
         return (seizedAssets, repaidAssets);
     }
 
-    /* DELEVERAGE */
-
-    /// @inheritdoc ILidoBlue
-    function deleverage(
-        MarketParams memory marketParams,
-        uint256 supplyShares,
-        address borrower,
-        address onBehalf,
-        address receiver
-    ) external nonHookReentrant returns (uint256 collateralSeized, uint256 debtCanceled) {
-        Id id = marketParams.id();
-        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
-        require(deleverageEnabled[id], LidoBlueErrorsLib.DELEVERAGE_DISABLED);
-        require(supplyShares != 0, LidoBlueErrorsLib.ZERO_SHARES);
-        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
-        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
-
-        _accrueInterest(marketParams, id);
-
-        debtCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        require(debtCanceled > _availableLiquidity(id), LidoBlueErrorsLib.DELEVERAGE_LIQUIDITY_AVAILABLE);
-
-        uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        require(position[id][borrower].borrowShares != 0, LidoBlueErrorsLib.DELEVERAGE_NO_DEBT);
-
-        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(collateralSeized != 0, LidoBlueErrorsLib.DELEVERAGE_SLICE_TOO_SMALL);
-        require(collateralSeized <= borrowerRawCollateral, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_COLLATERAL);
-
-        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        require(borrowSharesToBurn <= position[id][borrower].borrowShares, LidoBlueErrorsLib.DELEVERAGE_EXCEEDS_DEBT);
-
-        _hook(
-            id,
-            ILidoBlueMarketController.HookEvent.Deleverage,
-            abi.encode(
-                ILidoBlueMarketController.DeleverageHookData({
-                    caller: msg.sender,
-                    onBehalf: onBehalf,
-                    borrower: borrower,
-                    receiver: receiver,
-                    assetsToCancel: debtCanceled,
-                    collateralSeized: collateralSeized
-                })
-            )
-        );
-
-        position[id][onBehalf].supplyShares -= supplyShares;
-        market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
-
-        position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
-
-        position[id][borrower].collateral -= collateralSeized.toUint128();
-
-        emit LidoBlueEventsLib.Deleverage(
-            id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled
-        );
-
-        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
-    }
-
     /* FLASH LOANS */
 
     /// @inheritdoc IMorphoBase
-    function flashLoan(address token, uint256 assets, bytes calldata data) external nonHookReentrant {
+    function flashLoan(address token, uint256 assets, bytes calldata data) external {
         require(assets != 0, ErrorsLib.ZERO_ASSETS);
 
         emit EventsLib.FlashLoan(msg.sender, token, assets);
@@ -660,15 +655,15 @@ contract LidoBlue is ILidoBlue {
 
     /* INTEREST MANAGEMENT */
 
-    /// @inheritdoc ILidoBlue
-    function accrueInterest(MarketParams memory marketParams) external nonHookReentrant {
+    /// @inheritdoc IMorphoBase
+    function accrueInterest(MarketParams memory marketParams) external {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
 
         _hook(
             id,
-            ILidoBlueMarketController.HookEvent.AccrueInterest,
-            abi.encode(ILidoBlueMarketController.AccrueInterestHookData({caller: msg.sender}))
+            ILidoLendMarketController.HookEvent.AccrueInterest,
+            abi.encode(ILidoLendMarketController.AccrueInterestHookData({caller: msg.sender}))
         );
 
         _accrueInterest(marketParams, id);
@@ -736,14 +731,18 @@ contract LidoBlue is ILidoBlue {
     /* CONTROLLER HELPERS */
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
-    ///      core fork surface minimal; the controller decodes per-event in its `on()` handler.
-    /// @dev The controller call runs under the transient lock; the lock is released before the
-    ///      calling function writes state and runs Morpho callbacks.
-    function _hook(Id id, ILidoBlueMarketController.HookEvent e, bytes memory data) internal {
+    ///      core fork surface minimal, and the controller decodes per-event in its `on()` handler.
+    /// @dev Doubles as the reentrancy gate, scoped to where hooks exist: on a market with a
+    ///      controller, entering while another controller hook is in flight reverts. A market with
+    ///      no controller is never gated. Nested hooks are impossible: a controlled market reverts
+    ///      here before dispatching its own hook. The lock is released before the calling function
+    ///      writes state and runs Morpho callbacks.
+    function _hook(Id id, ILidoLendMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
         if (controller != address(0)) {
+            require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
             _hookInProgress = true;
-            ILidoBlueMarketController(controller).on(id, e, data);
+            ILidoLendMarketController(controller).on(id, e, data);
             _hookInProgress = false;
         }
     }

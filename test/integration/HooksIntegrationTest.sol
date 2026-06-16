@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import "../BaseTestWithController.sol";
 
-import {ILidoBlueMarketController} from "../../src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketController.sol";
 
 contract HooksIntegrationTest is BaseTestWithController {
     using SharesMathLib for uint256;
@@ -26,9 +26,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.supply(marketParams, 10e18, 0, SUPPLIER, hex"");
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.Supply), "event");
-        ILidoBlueMarketController.SupplyHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.SupplyHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.Supply), "event");
+        ILidoLendMarketController.SupplyHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.SupplyHookData));
         assertEq(d.caller, SUPPLIER, "caller");
         assertEq(d.onBehalf, SUPPLIER, "onBehalf");
         assertEq(d.assets, 10e18, "assets");
@@ -36,7 +36,7 @@ contract HooksIntegrationTest is BaseTestWithController {
     }
 
     function testHookSupplyBlocks() public {
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Supply, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Supply, true);
         loanToken.setBalance(SUPPLIER, 10e18);
         vm.prank(SUPPLIER);
         vm.expectRevert(_blocked());
@@ -53,9 +53,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.withdraw(marketParams, 4e18, 0, SUPPLIER, SUPPLIER);
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.Withdraw), "event");
-        ILidoBlueMarketController.WithdrawHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.WithdrawHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.Withdraw), "event");
+        ILidoLendMarketController.WithdrawHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.WithdrawHookData));
         assertEq(d.caller, SUPPLIER, "caller");
         assertEq(d.onBehalf, SUPPLIER, "onBehalf");
         assertEq(d.receiver, SUPPLIER, "receiver");
@@ -68,7 +68,7 @@ contract HooksIntegrationTest is BaseTestWithController {
         vm.prank(SUPPLIER);
         morpho.supply(marketParams, 10e18, 0, SUPPLIER, hex"");
 
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Withdraw, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Withdraw, true);
         vm.prank(SUPPLIER);
         vm.expectRevert(_blocked());
         morpho.withdraw(marketParams, 4e18, 0, SUPPLIER, SUPPLIER);
@@ -82,9 +82,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.borrow(marketParams, 50e18, 0, BORROWER, BORROWER);
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.Borrow), "event");
-        ILidoBlueMarketController.BorrowHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.BorrowHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.Borrow), "event");
+        ILidoLendMarketController.BorrowHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.BorrowHookData));
         assertEq(d.caller, BORROWER, "caller");
         assertEq(d.onBehalf, BORROWER, "onBehalf");
         assertEq(d.receiver, BORROWER, "receiver");
@@ -94,7 +94,7 @@ contract HooksIntegrationTest is BaseTestWithController {
 
     function testHookBorrowBlocks() public {
         _supplyAndCollateral();
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Borrow, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Borrow, true);
         vm.prank(BORROWER);
         vm.expectRevert(_blocked());
         morpho.borrow(marketParams, 50e18, 0, BORROWER, BORROWER);
@@ -110,9 +110,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.repay(marketParams, 20e18, 0, BORROWER, hex"");
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.Repay), "event");
-        ILidoBlueMarketController.RepayHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.RepayHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.Repay), "event");
+        ILidoLendMarketController.RepayHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.RepayHookData));
         assertEq(d.caller, BORROWER, "caller");
         assertEq(d.onBehalf, BORROWER, "onBehalf");
         assertEq(d.assets, 20e18, "assets");
@@ -124,7 +124,7 @@ contract HooksIntegrationTest is BaseTestWithController {
         vm.prank(BORROWER);
         morpho.borrow(marketParams, 50e18, 0, BORROWER, BORROWER);
 
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Repay, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Repay, true);
         vm.prank(BORROWER);
         vm.expectRevert(_blocked());
         morpho.repay(marketParams, 20e18, 0, BORROWER, hex"");
@@ -137,16 +137,16 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.supplyCollateral(marketParams, 10e18, BORROWER, hex"");
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.SupplyCollateral), "event");
-        ILidoBlueMarketController.SupplyCollateralHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.SupplyCollateralHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.SupplyCollateral), "event");
+        ILidoLendMarketController.SupplyCollateralHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.SupplyCollateralHookData));
         assertEq(d.caller, BORROWER, "caller");
         assertEq(d.onBehalf, BORROWER, "onBehalf");
         assertEq(d.assets, 10e18, "assets");
     }
 
     function testHookSupplyCollateralBlocks() public {
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.SupplyCollateral, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.SupplyCollateral, true);
         collateralToken.setBalance(BORROWER, 10e18);
         vm.prank(BORROWER);
         vm.expectRevert(_blocked());
@@ -162,9 +162,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         vm.stopPrank();
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.WithdrawCollateral), "event");
-        ILidoBlueMarketController.WithdrawCollateralHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.WithdrawCollateralHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.WithdrawCollateral), "event");
+        ILidoLendMarketController.WithdrawCollateralHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.WithdrawCollateralHookData));
         assertEq(d.caller, BORROWER, "caller");
         assertEq(d.onBehalf, BORROWER, "onBehalf");
         assertEq(d.receiver, BORROWER, "receiver");
@@ -176,7 +176,7 @@ contract HooksIntegrationTest is BaseTestWithController {
         vm.prank(BORROWER);
         morpho.supplyCollateral(marketParams, 10e18, BORROWER, hex"");
 
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.WithdrawCollateral, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.WithdrawCollateral, true);
         vm.prank(BORROWER);
         vm.expectRevert(_blocked());
         morpho.withdrawCollateral(marketParams, 4e18, BORROWER, BORROWER);
@@ -201,9 +201,9 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.liquidate(marketParams, BORROWER, 10e18, 0, hex"");
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.Liquidate), "event");
-        ILidoBlueMarketController.LiquidateHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.LiquidateHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.Liquidate), "event");
+        ILidoLendMarketController.LiquidateHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.LiquidateHookData));
         assertEq(d.caller, LIQUIDATOR, "caller");
         assertEq(d.borrower, BORROWER, "borrower");
         assertEq(d.seizedAssets, 10e18, "seizedAssets");
@@ -212,7 +212,7 @@ contract HooksIntegrationTest is BaseTestWithController {
 
     function testHookLiquidateBlocks() public {
         _openUnhealthy();
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.Liquidate, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.Liquidate, true);
         vm.prank(LIQUIDATOR);
         vm.expectRevert(_blocked());
         morpho.liquidate(marketParams, BORROWER, 10e18, 0, hex"");
@@ -223,14 +223,14 @@ contract HooksIntegrationTest is BaseTestWithController {
         morpho.accrueInterest(marketParams);
 
         assertEq(controller.hookCount(), before + 1, "fired");
-        assertEq(uint8(controller.lastEvent()), uint8(ILidoBlueMarketController.HookEvent.AccrueInterest), "event");
-        ILidoBlueMarketController.AccrueInterestHookData memory d =
-            abi.decode(controller.lastData(), (ILidoBlueMarketController.AccrueInterestHookData));
+        assertEq(uint8(controller.lastEvent()), uint8(ILidoLendMarketController.HookEvent.AccrueInterest), "event");
+        ILidoLendMarketController.AccrueInterestHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.AccrueInterestHookData));
         assertEq(d.caller, address(this), "caller");
     }
 
     function testHookAccrueInterestBlocks() public {
-        controller.setRevertOn(ILidoBlueMarketController.HookEvent.AccrueInterest, true);
+        controller.setRevertOn(ILidoLendMarketController.HookEvent.AccrueInterest, true);
         vm.expectRevert(_blocked());
         morpho.accrueInterest(marketParams);
     }

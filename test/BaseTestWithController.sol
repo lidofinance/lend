@@ -2,14 +2,14 @@
 pragma solidity ^0.8.0;
 
 import "./BaseTest.sol";
-import {ILidoBlue} from "../src/interfaces/ILidoBlue.sol";
-import {ILidoBlueMarketController} from "../src/interfaces/ILidoBlueMarketController.sol";
+import {ILidoLend} from "../src/interfaces/ILidoLend.sol";
+import {ILidoLendMarketController} from "../src/interfaces/ILidoLendMarketController.sol";
 import {ControllerMock} from "../src/mocks/ControllerMock.sol";
 
-/// @notice BaseTest variant whose market is bound to a (permissive) controller with deleverage
+/// @notice BaseTest variant whose market is bound to a (permissive) controller with settlement
 ///         enabled. The inherited `marketParams`/`id` are repointed to this controlled market, so
 ///         every BaseTest helper (`_supply`, `_supplyCollateralForBorrower`, ...) operates on it.
-/// @dev The controlled market uses `irm == address(0)` (interest disabled) so deleverage/share
+/// @dev The controlled market uses `irm == address(0)` (interest disabled) so settlement/share
 ///      math stays exact. Both `address(0)` IRM and `DEFAULT_TEST_LLTV` are already enabled by
 ///      `BaseTest.setUp`; the differing IRM gives this market a distinct id from the default one.
 contract BaseTestWithController is BaseTest {
@@ -32,7 +32,7 @@ contract BaseTestWithController is BaseTest {
         controller = new ControllerMock(id);
 
         vm.prank(OWNER);
-        ILidoBlue(address(morpho)).createMarket(marketParams, address(controller), true);
+        ILidoLend(address(morpho)).createMarket(marketParams, address(controller), true);
 
         _forward(1);
     }

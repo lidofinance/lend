@@ -5,7 +5,7 @@ pragma solidity ^0.8.0;
 /// @notice Minimal delegatecall proxy used only by the test suite to deploy the petrified
 ///         `Morpho` core the way production does (behind a proxy). The constructor runs `initData`
 ///         against `impl` in the proxy's own storage context, so the impl's petrified
-///         `_initialized` flag reads `false` here and `initialize` succeeds. All other calls are
+///         `isInitialized` flag reads `false` here and `initialize` succeeds. All other calls are
 ///         forwarded to `impl`.
 /// @dev Not a production proxy — no admin, no upgradeability. The real deployment uses
 ///      `OssifiableProxy` (see lido-lend `src/proxy`). `impl` is `immutable`, so it lives in
