@@ -108,7 +108,7 @@ Net effect of a settle of `X` in loan value at oracle price `P`. No loan tokens 
 | `borrower` collateral | − `X / P` |
 | `receiver` | + `X / P` collateral |
 
-The routine guards are listed with the function in the reference: the market exists and has settlement enabled, exactly one amount is non-zero, the caller is authorized for `onBehalf`, the borrower has debt, and the cut fits within the borrower's collateral and debt. One gate is specific to settle. After accrual, `debtCanceled` must strictly exceed `totalSupplyAssets − totalBorrowAssets`, the value an ordinary withdraw could serve. That bound is an accounting quantity rather than a token balance, so flash loans and donations cannot open it. One precondition carries no dedicated revert string: `onBehalf` must own at least the supply shares being burned, exactly as in `withdraw`, or the share subtraction underflows into a plain arithmetic panic.
+The routine guards are listed with the function in the reference: the market exists and has settlement enabled, exactly one amount is non-zero, the caller is authorized for `onBehalf`, the borrower has debt, and the cut fits within the borrower's collateral and debt. One gate is specific to settle. After accrual, `debtCanceled` must not exceed `onBehalf`'s settleable supply — its own supply value minus the market's free liquidity (`totalSupplyAssets − totalBorrowAssets`), floored at zero. A lender may therefore settle only the portion of its own supply that an ordinary withdraw cannot serve; the free-liquidity portion must be withdrawn instead. That bound is an accounting quantity rather than a token balance, so flash loans and donations cannot open it. Because it never exceeds `onBehalf`'s own supply, the gate also rejects burning more shares than `onBehalf` owns — cleanly, before the share subtraction, so there is no unguarded arithmetic-panic precondition.
 
 Illustrative numbers: at an oracle price of `3e36` (one collateral unit is worth three loan units), a lender burns shares worth `debtCanceled = 100` loan units (the share conversion already rounded this down). Collateral seized: `100 × 1e36 / 3e36 = 33` — the fractional `.33` stays with the borrower. Borrow shares burned: shares worth `100`, rounded up, so the borrower's debt falls by at least `100` — the rounding dust favors the protocol.
 
@@ -924,6 +924,14 @@ function _availableLiquidity(Id id) internal view returns (uint256);
 ```
 
 Returns the market's loan assets not currently borrowed. Does not include interest accrued since the last update.
+
+##### `_settleableSupply`
+
+```solidity
+function _settleableSupply(Id id, address onBehalf) internal view returns (uint256);
+```
+
+Returns the portion of `onBehalf`'s supply that exceeds the market's free liquidity (`_availableLiquidity`), floored at zero — the most a `settle` may cancel against it.
 
 ##### `extSloads`
 

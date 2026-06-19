@@ -474,7 +474,9 @@ contract LidoLend is ILidoLend {
 
         // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
         debtCanceled = supplyAssets;
-        require(debtCanceled > _availableLiquidity(id), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
+        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity; the
+        // liquid part must be redeemed normally rather than settled.
+        require(debtCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;
@@ -752,6 +754,15 @@ contract LidoLend is ILidoLend {
     function _availableLiquidity(Id id) internal view returns (uint256) {
         if (market[id].totalSupplyAssets <= market[id].totalBorrowAssets) return 0;
         return uint256(market[id].totalSupplyAssets) - uint256(market[id].totalBorrowAssets);
+    }
+
+    /// @dev The portion of `onBehalf`'s supply that exceeds the market's freely-withdrawable liquidity,
+    ///      i.e. the most a settle may cancel. Saturating: 0 when the supply is fully covered by liquidity.
+    function _settleableSupply(Id id, address onBehalf) internal view returns (uint256) {
+        uint256 availableLiquidity = _availableLiquidity(id);
+        uint256 onBehalfSupplyAssets = position[id][onBehalf].supplyShares
+        .toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        return onBehalfSupplyAssets > availableLiquidity ? onBehalfSupplyAssets - availableLiquidity : 0;
     }
 
     /* STORAGE VIEW */
