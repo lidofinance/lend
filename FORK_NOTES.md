@@ -40,7 +40,7 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 
 - `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and every inherited member whose fork behavior differs carries a `Warning` annotation.
   There are no other signature changes; a member without a fork `Warning` behaves exactly as upstream.
-- `src/interfaces/ILidoLend.sol` declares only the fork-added members (`initialize`, `isInitialized`, the `createMarket` overload, `settle`, `marketController`, `isSettlementEnabled`); `LidoLend is ILidoLend is IMorphoStaticTyping`, and the struct-returning getters are reachable by casting the core address to `IMorpho`.
+- `src/interfaces/ILidoLend.sol` mirrors Morpho's three-interface split. `ILidoLendBase` holds the fork-added members (`initialize`, `isInitialized`, the `createMarket` overload, `settle`, `marketController`, `isSettlementEnabled`). `ILidoLendStaticTyping` combines it with Morpho's tuple getters and is what the `LidoLend` contract inherits. `ILidoLend` combines it with the struct-returning `IMorpho`, so `ILidoLend(address(core))` works directly with the Morpho periphery libraries (`MorphoLib`, `MorphoBalancesLib`).
 - Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol` (`/* FORK-ADDED */` sections); `MorphoStorageLib.sol` exposes the fork-added storage slots.
 - ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
 
@@ -72,7 +72,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 - Not drop-in on the admin surface: market creation is `onlyOwner`, `enableIrm` / `enableLltv` are gone ("enabled" now means "used by some created market"; the allowlists remain enable-only).
 - Vault caveat: on a market with a controller, hooks may veto `supply`/`withdraw`; product controllers must not break the vault flows they intend to serve.
 - The core is upgradeable: upstream's immutability-derived guarantees hold only as strongly as the proxy's upgrade governance, until the proxy is ossified.
-- Solidity is bumped to `0.8.30` with `evm_version = "cancun"` (pinned in `foundry.toml`): the hook lock needs transient storage.
+- Solidity is bumped to `0.8.35` with `evm_version = "cancun"` (pinned in `foundry.toml`): the hook lock needs transient storage.
 
 ## Tests and verification
 
