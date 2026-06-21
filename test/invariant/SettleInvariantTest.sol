@@ -213,18 +213,19 @@ contract SettleInvariantTest is InvariantTest {
         ILidoLend(address(morpho)).settle(cParams, 0, c.sliceShares, LENDER, CB, LENDER);
     }
 
-    // settlement is the fallback for when ordinary liquidity is gone; the gate must reject a cut whose
-    // canceled debt could simply be repaid from free liquidity instead.
-    function test_settleBlockedWhenLiquidityAvailable() public {
+    // A settle may cancel at most the lender's own illiquid supply (supply − free liquidity); a larger
+    // slice — here the whole stake while free liquidity still exists — is rejected by the gate.
+    function test_settleBlockedAboveSettleableSupply() public {
         uint256 borrowAmount = MAX_TEST_AMOUNT / 8;
         loanToken.setBalance(LENDER, 2 * borrowAmount);
         vm.prank(LENDER);
-        morpho.supply(cParams, 2 * borrowAmount, 0, LENDER, hex""); // avail = borrowAmount > 0
+        // free liquidity = borrowAmount; settleable = supply - free liquidity = borrowAmount
+        morpho.supply(cParams, 2 * borrowAmount, 0, LENDER, hex"");
         vm.prank(CB);
         morpho.borrow(cParams, borrowAmount, 0, CB, CB);
 
-        // debtCanceled ~ a quarter of supply < avail, so the gate must block.
-        uint256 sliceShares = morpho.supplyShares(cId, LENDER) / 4;
+        // The whole stake (2 * borrowAmount) exceeds the settleable supply (borrowAmount), so the gate blocks.
+        uint256 sliceShares = morpho.supplyShares(cId, LENDER);
         vm.prank(LENDER);
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
         ILidoLend(address(morpho)).settle(cParams, 0, sliceShares, LENDER, CB, LENDER);

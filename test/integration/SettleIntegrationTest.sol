@@ -96,16 +96,21 @@ contract SettleIntegrationTest is BaseTestWithController {
         _openPosition(100e18, 100e18, 70e18);
         uint256 avail = morpho.totalSupplyAssets(id) - morpho.totalBorrowAssets(id);
         assertEq(avail, 30e18, "avail");
+        // Single supplier: settleable supply = own supply (100) − free liquidity (30) = the borrowed 70.
+        uint256 settleable = 100e18 - avail;
+        assertEq(settleable, 70e18, "settleable");
 
-        // debtCanceled == avail must revert (the gate requires strictly greater).
+        // debtCanceled == settleable + 1 exceeds the cap → the gate blocks (it fires before the debt and
+        // collateral caps).
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
-        _lido().settle(marketParams, 0, avail * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
+        _lido()
+            .settle(marketParams, 0, (settleable + 1) * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
 
-        // debtCanceled == avail + 1 clears the gate and executes: at 1:1 it seizes exactly avail + 1.
+        // debtCanceled == settleable clears the gate and executes: at 1:1 it seizes exactly settleable.
         uint256 sharesBefore = morpho.supplyShares(id, address(this));
-        uint256 slice = (avail + 1) * SharesMathLib.VIRTUAL_SHARES;
+        uint256 slice = settleable * SharesMathLib.VIRTUAL_SHARES;
         (uint256 seized,) = _lido().settle(marketParams, 0, slice, address(this), BORROWER, RECEIVER);
-        assertEq(seized, avail + 1, "seized exactly the canceled debt at 1:1");
+        assertEq(seized, settleable, "seized exactly the canceled debt at 1:1");
         assertEq(morpho.supplyShares(id, address(this)), sharesBefore - slice, "lender shares reduced by the slice");
     }
 
@@ -143,7 +148,16 @@ contract SettleIntegrationTest is BaseTestWithController {
 
     function testSettleOverCapBorrowShares() public {
         _openPosition(100e18, 100e18, 70e18);
-        // debtCanceled 80e18 → burns more than the 70e18 debt (collateralSeized 80e18 <= 100e18 collateral).
+        // A second borrower draws more so free liquidity shrinks and the lender's settleable supply
+        // (own supply − free liquidity) rises above BORROWER's 70e18 debt — letting the debt cap fire
+        // instead of the liquidity gate. After: total borrow 95, free liquidity 5, settleable 95.
+        collateralToken.setBalance(ONBEHALF, 100e18);
+        vm.startPrank(ONBEHALF);
+        morpho.supplyCollateral(marketParams, 100e18, ONBEHALF, hex"");
+        morpho.borrow(marketParams, 25e18, 0, ONBEHALF, ONBEHALF);
+        vm.stopPrank();
+
+        // debtCanceled 80e18 clears the gate (<= 95) but burns more than BORROWER's 70e18 debt.
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
         _lido().settle(marketParams, 0, 80e18 * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
     }
@@ -155,10 +169,11 @@ contract SettleIntegrationTest is BaseTestWithController {
         morpho.supply(marketParams, 100e18, 0, SUPPLIER, hex"");
         _openPosition(10e18, 200e18, 100e18);
 
-        // Pass more shares than the lender owns; the slice still clears every cap (big borrower).
+        // The lender's whole 10e18 supply sits within free liquidity, so its settleable supply is 0: the
+        // gate rejects any cut against it cleanly (no underflow), before the share subtraction.
         uint256 lenderShares = morpho.supplyShares(id, address(this));
         uint256 tooMany = lenderShares + 1e18 * SharesMathLib.VIRTUAL_SHARES;
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
         _lido().settle(marketParams, 0, tooMany, address(this), BORROWER, RECEIVER);
     }
 
