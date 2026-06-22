@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
-import "../../src/Morpho.sol";
+import "../../src/LidoLend.sol";
 import "../../src/libraries/SharesMathLib.sol";
 import "../../src/libraries/MarketParamsLib.sol";
 
-contract MorphoHarness is Morpho {
+contract MorphoHarness is LidoLend {
     using MarketParamsLib for MarketParams;
 
-    constructor(address newOwner) Morpho(newOwner) {}
+    constructor(address newOwner) {
+        owner = newOwner;
+    }
 
     function idToMarketParams_(Id id) external view returns (MarketParams memory) {
         return idToMarketParams[id];

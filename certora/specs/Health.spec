@@ -19,6 +19,7 @@ methods {
     function isHealthy(MorphoHarness.MarketParams, address user) external returns bool envfree;
 
     function _.price() external => CONSTANT;
+    function _.on(bytes32, uint8, bytes) external => NONDET;
     function UtilsLib.min(uint256 a, uint256 b) internal returns uint256 => summaryMin(a, b);
 }
 
@@ -27,8 +28,12 @@ function summaryMin(uint256 a, uint256 b) returns uint256 {
 }
 
 // Check that users cannot lose collateral by unauthorized parties except in case of an unhealthy position.
+// Liquidate needs no exclusion here: a healthy position cannot be liquidated, so it reverts.
+// Fork: settle is excluded. Per SPECIFICATION.md (Settlement), settle is a soft liquidation with no
+// core health check (it must reach unhealthy-but-solvent positions), so even a healthy borrower can
+// be cut; protecting the borrower is the controller's responsibility, not the core's.
 rule healthyUserCannotLoseCollateral(env e, method f, calldataarg data)
-filtered { f -> !f.isView }
+filtered { f -> !f.isView && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector }
 {
     MorphoHarness.MarketParams marketParams;
     MorphoHarness.Id id = Util.libId(marketParams);
@@ -50,9 +55,14 @@ filtered { f -> !f.isView }
 }
 
 // Check that users without collateral also have no debt.
-// This invariant ensures that bad debt realization cannot be bypassed.
+// This invariant ensures that bad-debt realization cannot be bypassed by the ordinary actions.
+// Fork: settle is excluded. Per SPECIFICATION.md (Settlement), settle never realizes bad debt — a cut
+// that empties the collateral leaves residual borrow shares in place (to be socialized by a later
+// liquidation), and excluding LTV>100% borrowers is the controller's duty, not the core's. So the core
+// does not maintain debt => collateral across settle.
 invariant alwaysCollateralized(MorphoHarness.Id id, address borrower)
-    borrowShares(id, borrower) != 0 => collateral(id, borrower) != 0;
+    borrowShares(id, borrower) != 0 => collateral(id, borrower) != 0
+    filtered { f -> f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector }
 
 // Checks that passing a seized amount input to liquidate leads to repaid shares S and repaid amount A such that liquidating instead with shares S also repays the amount A.
 rule liquidateEquivalentInputDebtAndInputCollateral(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, bytes data) {

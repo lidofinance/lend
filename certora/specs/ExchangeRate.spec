@@ -23,6 +23,8 @@ methods {
 
     function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => HAVOC_ECF;
 
+    function _.on(bytes32, uint8, bytes) external => HAVOC_ECF;
+
 }
 
 invariant feeInRange(MorphoHarness.Id id)
@@ -138,11 +140,16 @@ rule liquidateWithoutBadDebtRealizationIncreasesSupplyExchangeRate(env e, Morpho
 // Check that except when not accruing interest, every function is decreasing the value of borrow shares.
 // The repay function is checked separately, see below.
 // The liquidate function is checked separately, see below.
+// Fork: settle is excluded. It cancels borrower debt, reducing totalBorrowAssets/Shares, but burns the
+// borrow shares with toSharesUp (rounded up), which can nudge the borrow exchange rate UP by a rounding
+// ULP — the standard adverse-to-user Morpho rounding. So, unlike repay/liquidate, settle does not admit
+// a clean "decreases" rule; the residual borrowers' per-share debt may rise marginally.
 rule onlyAccrueInterestCanIncreaseBorrowExchangeRate(env e, method f, calldataarg args)
 filtered {
     f -> !f.isView &&
     f.selector != sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector &&
-    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
 }
 {
     MorphoHarness.Id id;

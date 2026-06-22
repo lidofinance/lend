@@ -15,6 +15,7 @@ methods {
     function lastUpdate(MorphoInternalAccess.Id) external returns uint256 envfree;
     function nonce(address) external returns uint256 envfree;
     function isAuthorized(address, address) external returns bool envfree;
+    function marketController(MorphoInternalAccess.Id) external returns address envfree;
 
     function Util.libId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
     function Util.refId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
@@ -24,6 +25,8 @@ methods {
     function MarketParamsLib.id(MorphoInternalAccess.MarketParams memory marketParams) internal returns MorphoInternalAccess.Id => summaryId(marketParams);
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
+
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
 persistent ghost mapping(address => mathint) balance {
@@ -315,8 +318,14 @@ rule setAuthorizationWithSigChangesNonceAndAuthorizes(env e, MorphoInternalAcces
 }
 
 // Check that one can always repay the debt in full.
+// Fork scope: a market controller can veto any action through the on() hook, so unconditional
+// exit-liveness only holds for markets without a controller. With a controller, repayment is
+// subject to the controller's policy by design.
 rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, bytes data) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
+
+    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
+    require marketController(id) == 0;
 
     // Assume no callback, which still allows to repay all.
     require data.length == 0;
@@ -346,8 +355,12 @@ rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 
 }
 
 // Check the one can always withdraw all, under the condition that there are no outstanding debt on the market.
+// Fork scope: only for markets without a controller, since the on() hook can veto a withdraw.
 rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
+
+    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
+    require marketController(id) == 0;
 
     // Assume a full withdraw.
     require shares == supplyShares(id, e.msg.sender);
@@ -371,8 +384,12 @@ rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint2
 
 // Check that a user can always withdraw all, under the condition that this user does not have an outstanding debt.
 // Combined with the canRepayAll rule, this ensures that a borrower can always fully exit a market.
+// Fork scope: only for markets without a controller, since the on() hook can veto a withdrawCollateral.
 rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 assets, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
+
+    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
+    require marketController(id) == 0;
 
     // Ensure a full withdrawCollateral.
     require assets == collateral(id, e.msg.sender);

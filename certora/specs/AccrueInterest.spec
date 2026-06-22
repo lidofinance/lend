@@ -18,6 +18,11 @@ methods {
     function _.onMorphoSupply(uint256, bytes) external => NONDET;
     function _.onMorphoSupplyCollateral(uint256, bytes) external => NONDET;
     function _.onMorphoFlashLoan(uint256, bytes) external => NONDET;
+    function _.on(bytes32, uint8, bytes) external => NONDET;
+    // marketId() is the controller's immutable bound market id: a storage-free view. Model it as a
+    // deterministic ghost (keyed by the controller), since a havoc'd external call would make
+    // createMarket(.., controller, ..) appear non-commutative with accrueInterest.
+    function _.marketId() external => ghostMarketId(calledContract) expect bytes32;
 }
 
 ghost ghostMulDivUp(uint256, uint256, uint256) returns uint256;
@@ -27,6 +32,7 @@ ghost ghostBorrowRate(address, uint256) returns uint256;
 ghost ghostOraclePrice(uint256) returns uint256;
 ghost ghostTransfer(address, uint256) returns bool;
 ghost ghostTransferFrom(address, address, uint256) returns bool;
+ghost ghostMarketId(address) returns bytes32;
 
 
 // Check that calling accrueInterest first has no effect.

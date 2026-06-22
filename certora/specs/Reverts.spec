@@ -16,12 +16,39 @@ methods {
     function isLltvEnabled(uint256) external returns bool envfree;
     function isAuthorized(address, address) external returns bool envfree;
     function nonce(address) external returns uint256 envfree;
+    function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
+    function supplyShares(MorphoHarness.Id, address) external returns uint256 envfree;
+    function borrowShares(MorphoHarness.Id, address) external returns uint256 envfree;
+    function collateral(MorphoHarness.Id, address) external returns uint256 envfree;
+    function virtualTotalSupplyAssets(MorphoHarness.Id) external returns uint256 envfree;
+    function virtualTotalSupplyShares(MorphoHarness.Id) external returns uint256 envfree;
+    function virtualTotalBorrowAssets(MorphoHarness.Id) external returns uint256 envfree;
+    function virtualTotalBorrowShares(MorphoHarness.Id) external returns uint256 envfree;
 
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
 
     function Util.maxFee() external returns uint256 envfree;
     function Util.wad() external returns uint256 envfree;
+    function Util.oraclePriceScale() external returns uint256 envfree;
+    function Util.libMulDivDown(uint256, uint256, uint256) external returns uint256 envfree;
+    function Util.libMulDivUp(uint256, uint256, uint256) external returns uint256 envfree;
+
+    function _.on(bytes32, uint8, bytes) external => NONDET;
+    // marketId() is the controller's immutable bound market id: a storage-free view. Model it as a
+    // deterministic ghost (keyed by the controller) so the CONTROLLER_MISMATCH revert can be asserted
+    // against a fixed value instead of a havoc'd external return.
+    function _.marketId() external => ghostMarketId(calledContract) expect MorphoHarness.Id;
+    // Pin the oracle price to a fixed value so settle's collateralSeized = mulDivDown(debtCanceled,
+    // ORACLE_PRICE_SCALE, price) can be reconstructed deterministically in the economic-revert rules.
+    function _.price() external => constantPrice expect uint256;
 }
+
+// Persistent: marketId() is an immutable view, and createMarket ends with an unresolved IIrm.borrowRate()
+// call that would otherwise havoc this ghost, desyncing the value the assert reads from the one the
+// contract's marketId() check used.
+persistent ghost ghostMarketId(address) returns MorphoHarness.Id;
+// Persistent for the same reason: the settle economic-revert rules read it in the assert after the call.
+persistent ghost uint256 constantPrice;
 
 definition isCreated(MorphoHarness.Id id) returns bool =
     (lastUpdate(id) != 0);
@@ -90,14 +117,31 @@ rule setFeeRecipientRevertCondition(env e, address newFeeRecipient) {
     assert lastReverted <=> e.msg.value != 0 || e.msg.sender != oldOwner || newFeeRecipient == oldFeeRecipient;
 }
 
-// Check that createMarket reverts when its input are not validated.
+// Check that createMarket reverts when its inputs are not validated.
+// Fork: createMarket is onlyOwner and auto-enables the irm/lltv on first use (the standalone
+// enableIrm/enableLltv were removed), so a disabled irm/lltv no longer reverts. The revert
+// conditions are instead a non-owner caller and an lltv out of range.
 rule createMarketInputValidation(env e, MorphoHarness.MarketParams marketParams) {
     MorphoHarness.Id id = Util.libId(marketParams);
-    bool irmEnabled = isIrmEnabled(marketParams.irm);
-    bool lltvEnabled = isLltvEnabled(marketParams.lltv);
+    address oldOwner = owner();
+    uint256 wad = Util.wad();
     bool wasCreated = isCreated(id);
     createMarket@withrevert(e, marketParams);
-    assert e.msg.value != 0 || !irmEnabled || !lltvEnabled || wasCreated => lastReverted;
+    assert e.msg.value != 0 || e.msg.sender != oldOwner || marketParams.lltv >= wad || wasCreated => lastReverted;
+}
+
+// Check that the controller createMarket overload reverts when its inputs are not validated.
+// Fork-specific entrypoint: it additionally requires a non-zero controller (the controller and
+// the settlement opt-in are fixed at creation) whose own marketId() must equal this market's id
+// (CONTROLLER_MISMATCH). The latter is asserted by pinning the controller's marketId() to a
+// deterministic ghost; it only fires when controller != 0 (the zero case is the disjunct before it).
+rule createMarketWithControllerInputValidation(env e, MorphoHarness.MarketParams marketParams, address controller, bool enableSettlement) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    address oldOwner = owner();
+    uint256 wad = Util.wad();
+    bool wasCreated = isCreated(id);
+    createMarket@withrevert(e, marketParams, controller, enableSettlement);
+    assert e.msg.value != 0 || e.msg.sender != oldOwner || controller == 0 || marketParams.lltv >= wad || wasCreated || ghostMarketId(controller) != id => lastReverted;
 }
 
 // Check that supply reverts when its input are not validated.
@@ -155,6 +199,102 @@ rule flashLoanInputValidation(env e, address token, uint256 assets, bytes data) 
 rule liquidateInputValidation(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, uint256 repaidShares, bytes data) {
     liquidate@withrevert(e, marketParams, borrower, seizedAssets, repaidShares, data);
     assert !exactlyOneZero(seizedAssets, repaidShares) => lastReverted;
+}
+
+// Check that settle reverts when its inputs are not validated.
+// Fork entrypoint. Like withdraw, exactly one of supplyAssets/supplyShares must be non-zero, the
+// receiver must be non-zero, and the caller must be authorized for onBehalf. Two settle-specific
+// input gates: the market must exist and settlement must be enabled on it (the createMarket(.., true)
+// opt-in). Each is a require that must hold for success, so any of them failing forces a revert
+// regardless of their order. The deeper economic guards (borrower has debt, the slice fits the
+// borrower's collateral and debt, ordinary liquidity is exhausted) depend on accrual/oracle/share
+// math and are not characterized here.
+rule settleInputValidation(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    // Capture envfree getters before the @withrevert call; querying them afterwards would reset lastReverted.
+    bool created = isCreated(id);
+    bool settlementEnabled = isSettlementEnabled(id);
+    // Safe require because no one controls the zero address.
+    require e.msg.sender != 0;
+    requireInvariant zeroDoesNotAuthorize(e.msg.sender);
+    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    assert !created || !settlementEnabled || !exactlyOneZero(supplyAssets, supplyShares) || onBehalf == 0 || receiver == 0 => lastReverted;
+}
+
+// The next four rules characterize settle's economic guards (the ones beyond input validation), each as
+// a one-directional "condition => revert". They share two modeling assumptions so the resolved quantities
+// can be reconstructed exactly: the assets-input path (supplyShares == 0, which leaves debtCanceled ==
+// supplyAssets), and zero elapsed interest (lastUpdate == now, so _accrueInterest leaves the totals put).
+
+// settle reverts (SETTLEMENT_NO_DEBT) when the targeted borrower has no debt — it is a soft liquidation
+// and only acts on indebted positions. borrowShares is untouched by interest accrual, so the pre-state
+// read is the value the guard sees; no other assumption is needed.
+rule settleNoDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    bool noDebt = borrowShares(id, borrower) == 0;
+    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    assert noDebt => lastReverted;
+}
+
+// settle reverts (SETTLEMENT_LIQUIDITY_AVAILABLE) when the cancelled debt exceeds onBehalf's settleable
+// supply: the part of onBehalf's supply that sits beyond the freely-withdrawable liquidity. The liquid
+// part must be redeemed with a normal withdraw, so settle is gated to debtCanceled <= _settleableSupply,
+// where _settleableSupply = max(0, onBehalfSupplyAssets - availableLiquidity),
+//   availableLiquidity   = zeroFloorSub(totalSupplyAssets, totalBorrowAssets),
+//   onBehalfSupplyAssets = toAssetsDown(supplyShares(onBehalf), totalSupplyAssets, totalSupplyShares).
+rule settleLiquidityAvailableReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require supplyShares == 0;
+    require lastUpdate(id) == e.block.timestamp;
+
+    mathint availableLiquidity = totalSupplyAssets(id) > totalBorrowAssets(id)
+        ? to_mathint(totalSupplyAssets(id)) - to_mathint(totalBorrowAssets(id))
+        : 0;
+    uint256 onBehalfSupplyAssets = Util.libMulDivDown(supplyShares(id, onBehalf), virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    mathint settleableSupply = to_mathint(onBehalfSupplyAssets) > availableLiquidity
+        ? to_mathint(onBehalfSupplyAssets) - availableLiquidity
+        : 0;
+
+    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+
+    assert to_mathint(supplyAssets) > settleableSupply => lastReverted;
+}
+
+// settle reverts on the collateral cut: the seized collateral must be non-zero (SETTLEMENT_SLICE_TOO_SMALL)
+// and must fit the borrower's collateral (SETTLEMENT_EXCEEDS_COLLATERAL). collateralSeized =
+// mulDivDown(debtCanceled, ORACLE_PRICE_SCALE, price), reconstructed with the pinned constant price.
+rule settleCollateralCutReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require supplyShares == 0;
+    require lastUpdate(id) == e.block.timestamp;
+    // A zero price makes the contract's own mulDivDown revert; that sub-case is excluded, not characterized.
+    require constantPrice != 0;
+
+    uint256 collateralSeized = Util.libMulDivDown(supplyAssets, Util.oraclePriceScale(), constantPrice);
+    // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
+    uint256 borrowerCollateral = collateral(id, borrower);
+
+    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+
+    assert collateralSeized == 0 => lastReverted;
+    assert to_mathint(collateralSeized) > to_mathint(borrowerCollateral) => lastReverted;
+}
+
+// settle reverts (SETTLEMENT_EXCEEDS_DEBT) when the shares burned for the cut exceed the borrower's debt.
+// borrowSharesToBurn = toSharesUp(debtCanceled, totalBorrowAssets, totalBorrowShares)
+//                    = mulDivUp(supplyAssets, totalBorrowShares + VIRTUAL_SHARES, totalBorrowAssets + VIRTUAL_ASSETS).
+rule settleExceedsDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require supplyShares == 0;
+    require lastUpdate(id) == e.block.timestamp;
+
+    uint256 borrowSharesToBurn = Util.libMulDivUp(supplyAssets, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id));
+    // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
+    uint256 borrowerDebt = borrowShares(id, borrower);
+
+    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+
+    assert to_mathint(borrowSharesToBurn) > to_mathint(borrowerDebt) => lastReverted;
 }
 
 // Check that setAuthorizationWithSig reverts when its inputs are not validated.

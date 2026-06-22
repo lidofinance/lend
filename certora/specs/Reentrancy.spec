@@ -3,10 +3,13 @@ methods {
     function extSloads(bytes32[]) external returns bytes32[] => NONDET DELETE;
 
     function _.borrowRate(MorphoHarness.MarketParams marketParams, MorphoHarness.Market) external => summaryBorrowRate() expect uint256;
+
+    function _.on(bytes32, uint8, bytes) external => summaryControllerOn() expect void;
 }
 
 persistent ghost bool delegateCall;
 persistent ghost bool callIsBorrowRate;
+persistent ghost bool callIsControllerOn;
 // True when storage has been accessed with either a SSTORE or a SLOAD.
 persistent ghost bool hasAccessedStorage;
 // True when a CALL has been done after storage has been accessed.
@@ -18,6 +21,10 @@ function summaryBorrowRate() returns uint256 {
     uint256 result;
     callIsBorrowRate = true;
     return result;
+}
+
+function summaryControllerOn() {
+    callIsControllerOn = true;
 }
 
 hook ALL_SSTORE(uint loc, uint v) {
@@ -34,6 +41,9 @@ hook CALL(uint g, address addr, uint value, uint argsOffset, uint argsLength, ui
     if (callIsBorrowRate) {
         // The calls to borrow rate are trusted and don't count.
         callIsBorrowRate = false;
+    } else if (callIsControllerOn) {
+        // The calls to the market controller hook are trusted and don't count.
+        callIsControllerOn = false;
     } else {
         hasCallAfterAccessingStorage = hasAccessedStorage;
     }
@@ -47,6 +57,7 @@ hook DELEGATECALL(uint g, address addr, uint argsOffset, uint argsLength, uint r
 rule reentrancySafe(method f, env e, calldataarg data) {
     // Set up the initial state.
     require !callIsBorrowRate;
+    require !callIsControllerOn;
     require !hasAccessedStorage && !hasCallAfterAccessingStorage && !hasReentrancyUnsafeCall;
     f(e, data);
     assert !hasReentrancyUnsafeCall;

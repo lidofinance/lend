@@ -10,6 +10,8 @@ methods {
     function collateral(MorphoHarness.Id, address) external returns uint256 envfree;
     function totalSupplyShares(MorphoHarness.Id) external returns uint256 envfree;
     function totalBorrowShares(MorphoHarness.Id) external returns uint256 envfree;
+    function totalSupplyAssets(MorphoHarness.Id) external returns uint256 envfree;
+    function totalBorrowAssets(MorphoHarness.Id) external returns uint256 envfree;
     function virtualTotalSupplyAssets(MorphoHarness.Id) external returns uint256 envfree;
     function virtualTotalSupplyShares(MorphoHarness.Id) external returns uint256 envfree;
     function virtualTotalBorrowAssets(MorphoHarness.Id) external returns uint256 envfree;
@@ -19,6 +21,8 @@ methods {
     function Util.libMulDivDown(uint256, uint256, uint256) external returns uint256 envfree;
     function Util.libMulDivUp(uint256, uint256, uint256) external returns uint256 envfree;
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
+
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
 function expectedSupplyAssets(MorphoHarness.Id id, address user) returns uint256 {
@@ -131,4 +135,42 @@ rule withdrawCollateralAssetsAccounting(env e, MorphoHarness.MarketParams market
     withdrawCollateral(e, marketParams, withdrawnAssets, onBehalf, receiver);
 
     assert withdrawnAssets <= ownedAssets;
+}
+
+// Fork: settle cancels borrower debt against onBehalf's supply at par, with no incentive (SPECIFICATION
+// §Settlement). Characterize the accounting effect positively: the same debtCanceled value is removed
+// (zero-floored) from both totalSupplyAssets and totalBorrowAssets, the burned supply shares come
+// entirely from onBehalf, and the burned borrow shares come entirely from borrower. The collateral
+// side is characterized separately by settleOnlyReducesTargetedBorrowerCollateral in ConsistentState.
+rule settleAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+
+    // settle accrues interest first; assume it is already accrued (no elapsed time) so the totals move
+    // only by the cut, not by accrual.
+    require lastUpdate(id) == e.block.timestamp;
+
+    uint256 supplySharesOnBehalfBefore = supplyShares(id, onBehalf);
+    uint256 totalSupplySharesBefore = totalSupplyShares(id);
+    uint256 totalSupplyAssetsBefore = totalSupplyAssets(id);
+    uint256 borrowSharesBorrowerBefore = borrowShares(id, borrower);
+    uint256 totalBorrowSharesBefore = totalBorrowShares(id);
+    uint256 totalBorrowAssetsBefore = totalBorrowAssets(id);
+
+    uint256 debtCanceled;
+    _, debtCanceled = settle(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+
+    // Both asset totals fall by debtCanceled, zero-floored — equal value off each side (par, no incentive).
+    assert to_mathint(totalSupplyAssetsBefore) >= to_mathint(debtCanceled)
+        => to_mathint(totalSupplyAssets(id)) == to_mathint(totalSupplyAssetsBefore) - to_mathint(debtCanceled);
+    assert to_mathint(totalSupplyAssetsBefore) < to_mathint(debtCanceled) => totalSupplyAssets(id) == 0;
+    assert to_mathint(totalBorrowAssetsBefore) >= to_mathint(debtCanceled)
+        => to_mathint(totalBorrowAssets(id)) == to_mathint(totalBorrowAssetsBefore) - to_mathint(debtCanceled);
+    assert to_mathint(totalBorrowAssetsBefore) < to_mathint(debtCanceled) => totalBorrowAssets(id) == 0;
+
+    // The burned supply shares are taken entirely from onBehalf; nothing else moves the supply total.
+    assert to_mathint(supplySharesOnBehalfBefore) - to_mathint(supplyShares(id, onBehalf))
+        == to_mathint(totalSupplySharesBefore) - to_mathint(totalSupplyShares(id));
+    // The burned borrow shares are taken entirely from borrower; nothing else moves the borrow total.
+    assert to_mathint(borrowSharesBorrowerBefore) - to_mathint(borrowShares(id, borrower))
+        == to_mathint(totalBorrowSharesBefore) - to_mathint(totalBorrowShares(id));
 }

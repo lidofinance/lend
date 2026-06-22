@@ -26,6 +26,8 @@ methods {
 
     function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => HAVOC_ECF;
 
+    function _.on(bytes32, uint8, bytes) external => HAVOC_ECF;
+
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
 }
@@ -143,6 +145,10 @@ invariant idleAmountLessThanBalance(address token)
             requireInvariant marketParamsOfHashOf(marketParams);
             require e.msg.sender != currentContract;
         }
+        preserved settle(MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) with (env e) {
+            requireInvariant marketParamsOfHashOf(marketParams);
+            require e.msg.sender != currentContract;
+        }
     }
 
 // Check that a market can only exist if its LLTV is enabled.
@@ -220,8 +226,11 @@ rule userCannotGainBorrowShares(env e, method f, calldataarg args) filtered { f 
     assert sharesAfter <= sharesBefore;
 }
 
-// Check that users cannot lose collateral by unauthorized parties except in case of a liquidation.
-rule userCannotLoseCollateralExceptLiquidate(env e, method f, calldataarg args) filtered { f -> !f.isView && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector } {
+// Check that users cannot lose collateral by unauthorized parties except in case of a liquidation or a settlement.
+// Fork: settle is a bad-debt mechanism that, like liquidate, seizes collateral from an indebted borrower
+// (it requires borrowShares != 0) without that borrower's authorization, so it is excluded here too.
+// Users without outstanding debt remain protected by userWithoutBorrowCannotLoseCollateral.
+rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataarg args) filtered { f -> !f.isView && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector } {
     MorphoHarness.Id id;
     address user;
 
@@ -257,6 +266,38 @@ rule userWithoutBorrowCannotLoseCollateral(env e, method f, calldataarg args) fi
     mathint collateralAfter = collateral(id, user);
 
     assert collateralAfter >= collateralBefore;
+}
+
+// Strong companion to userCannotLoseCollateralExceptLiquidateOrSettle: instead of merely excluding
+// settle from that rule, characterize exactly what settle may do to collateral. settle only reduces
+// the collateral of the single `borrower` it targets in the settled market, and only a borrower that
+// has outstanding debt; every other account, in this or any other market, keeps its collateral.
+rule settleOnlyReducesTargetedBorrowerCollateral(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 supplyAssets,
+    uint256 supplyShares,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id settledId = Util.libId(marketParams);
+    MorphoHarness.Id id;
+    address user;
+
+    uint256 collBefore = collateral(id, user);
+    uint256 borrowerDebtBefore = borrowShares(settledId, borrower);
+
+    settle(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+
+    uint256 collAfter = collateral(id, user);
+
+    // Only the targeted borrower's collateral, in the settled market, can change.
+    assert (id != settledId || user != borrower) => collAfter == collBefore;
+    // That collateral can only decrease, never increase.
+    assert collAfter <= collBefore;
+    // And it can decrease only if the borrower actually had debt (settle requires borrowShares != 0).
+    assert collAfter < collBefore => borrowerDebtBefore != 0;
 }
 
 // Invariant checking that the last updated time is never greater than the current time.

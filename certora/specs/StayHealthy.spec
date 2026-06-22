@@ -8,10 +8,17 @@ function mulDivUp(uint256 x, uint256 y, uint256 d) returns uint256 {
 
 // Check that without accruing interest, no interaction can put an healthy account into an unhealthy one.
 // The liquidate function times out in this rule, but has been checked separately.
+// settle is also excluded: it has no core health gate and burns totalBorrowShares/Assets (shares
+// rounded up), shifting the pooled borrow ratio like liquidate. The settled borrower's own health is
+// preserved by the par cut (collateralSeized rounds down, borrowSharesToBurn rounds up — both favor
+// the borrower); the ratio shift is the standard adverse-to-user Morpho rounding for third parties.
+// A machine-checked settle case (analogous to the liquidate rules below) times out monolithically and
+// needs the same case-splitting; left as follow-up.
 rule stayHealthy(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView &&
-    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
 }
 {
     MorphoHarness.MarketParams marketParams;

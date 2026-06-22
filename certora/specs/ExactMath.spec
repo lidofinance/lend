@@ -21,6 +21,7 @@ methods {
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => NONDET;
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => NONDET;
     function _.onMorphoSupply(uint256 assets, bytes data) external => HAVOC_ECF;
+    function _.on(bytes32, uint8, bytes) external => HAVOC_ECF;
 }
 
 // Check that when not accruing interest, and when repaying all, the borrow exchange rate is at least reset to the initial exchange rate.
