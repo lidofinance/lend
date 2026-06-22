@@ -15,6 +15,9 @@ contract MorphoStorageLibTest is BaseTest {
     using SharesMathLib for uint256;
     using MarketParamsLib for MarketParams;
 
+    /* ============================== MORPHO UPSTREAM TESTS ============================== */
+    /* Inherited from morpho-org/morpho-blue @ 1478e9cf, adapted to the LidoLend core. */
+
     function testStorage(uint256 amountSupplied, uint256 amountBorrowed, uint256 timeElapsed, uint256 fee) public {
         // Prepare storage layout with non empty values.
 
@@ -105,6 +108,9 @@ contract MorphoStorageLibTest is BaseTest {
         assertEq(abi.decode(abi.encode(values[14]), (address)), expectedParams.irm);
         assertEq(uint256(values[15]), expectedParams.lltv);
     }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Tests for fork-added behavior. */
 
     function testStorageForkSlots() public {
         // Controller-bound, settlement-enabled market (irm == 0 gives an id distinct from the default).

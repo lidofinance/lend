@@ -16,6 +16,7 @@ contract ControllerMock is ILidoLendMarketController {
     bytes32 internal immutable _marketId;
 
     uint256 public hookCount;
+    Id public lastId;
     HookEvent public lastEvent;
     bytes public lastData;
     mapping(uint8 => uint256) public eventCount;
@@ -34,9 +35,10 @@ contract ControllerMock is ILidoLendMarketController {
         return Id.wrap(_marketId);
     }
 
-    function on(Id, HookEvent hookEvent, bytes calldata data) external {
+    function on(Id id, HookEvent hookEvent, bytes calldata data) external {
         if (revertOn[uint8(hookEvent)]) revert("controller: blocked");
         hookCount++;
+        lastId = id;
         lastEvent = hookEvent;
         lastData = data;
         eventCount[uint8(hookEvent)]++;

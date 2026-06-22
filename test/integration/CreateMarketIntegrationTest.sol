@@ -8,6 +8,41 @@ contract CreateMarketIntegrationTest is BaseTest {
     using MorphoLib for IMorpho;
     using MarketParamsLib for MarketParams;
 
+    /* ============================== MORPHO UPSTREAM TESTS ============================== */
+    /* Inherited from morpho-org/morpho-blue @ 1478e9cf, adapted to the LidoLend core. */
+
+    function testCreateMarketAlreadyCreated(MarketParams memory marketParamsFuzz) public {
+        marketParamsFuzz.irm = address(irm);
+        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
+
+        vm.prank(OWNER);
+        morpho.createMarket(marketParamsFuzz);
+
+        vm.expectRevert(bytes(ErrorsLib.MARKET_ALREADY_CREATED));
+        vm.prank(OWNER);
+        morpho.createMarket(marketParamsFuzz);
+    }
+
+    function testIdToMarketParams(MarketParams memory marketParamsFuzz) public {
+        marketParamsFuzz.irm = address(irm);
+        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
+        Id marketParamsFuzzId = marketParamsFuzz.id();
+
+        vm.prank(OWNER);
+        morpho.createMarket(marketParamsFuzz);
+
+        MarketParams memory params = morpho.idToMarketParams(marketParamsFuzzId);
+
+        assertEq(marketParamsFuzz.loanToken, params.loanToken, "loanToken != loanToken");
+        assertEq(marketParamsFuzz.collateralToken, params.collateralToken, "collateralToken != collateralToken");
+        assertEq(marketParamsFuzz.oracle, params.oracle, "oracle != oracle");
+        assertEq(marketParamsFuzz.irm, params.irm, "irm != irm");
+        assertEq(marketParamsFuzz.lltv, params.lltv, "lltv != lltv");
+    }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Tests for fork-added behavior. */
+
     function testCreateMarketTooHighLltv(MarketParams memory marketParamsFuzz) public {
         marketParamsFuzz.lltv = bound(marketParamsFuzz.lltv, WAD, type(uint256).max);
 
@@ -69,34 +104,5 @@ contract CreateMarketIntegrationTest is BaseTest {
         assertEq(morpho.totalBorrowAssets(marketParamsFuzzId), 0, "totalBorrowAssets != 0");
         assertEq(morpho.totalBorrowShares(marketParamsFuzzId), 0, "totalBorrowShares != 0");
         assertEq(morpho.fee(marketParamsFuzzId), 0, "fee != 0");
-    }
-
-    function testCreateMarketAlreadyCreated(MarketParams memory marketParamsFuzz) public {
-        marketParamsFuzz.irm = address(irm);
-        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
-
-        vm.prank(OWNER);
-        morpho.createMarket(marketParamsFuzz);
-
-        vm.expectRevert(bytes(ErrorsLib.MARKET_ALREADY_CREATED));
-        vm.prank(OWNER);
-        morpho.createMarket(marketParamsFuzz);
-    }
-
-    function testIdToMarketParams(MarketParams memory marketParamsFuzz) public {
-        marketParamsFuzz.irm = address(irm);
-        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
-        Id marketParamsFuzzId = marketParamsFuzz.id();
-
-        vm.prank(OWNER);
-        morpho.createMarket(marketParamsFuzz);
-
-        MarketParams memory params = morpho.idToMarketParams(marketParamsFuzzId);
-
-        assertEq(marketParamsFuzz.loanToken, params.loanToken, "loanToken != loanToken");
-        assertEq(marketParamsFuzz.collateralToken, params.collateralToken, "collateralToken != collateralToken");
-        assertEq(marketParamsFuzz.oracle, params.oracle, "oracle != oracle");
-        assertEq(marketParamsFuzz.irm, params.irm, "irm != irm");
-        assertEq(marketParamsFuzz.lltv, params.lltv, "lltv != lltv");
     }
 }

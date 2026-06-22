@@ -170,6 +170,59 @@ contract ReentrancyIntegrationTest is BaseTest {
         assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "outer supply applied");
     }
 
+    function testOtherControlledMarketActionAllowedDuringHook() public {
+        // The lock is per market: a second controlled market holds its own lock, so reentering it
+        // mid-hook is allowed even though reentering the hooked market itself would revert.
+        MarketParams memory mp = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(0),
+            lltv: 0.4 ether
+        });
+        Id mpId = mp.id();
+        ReentrantControllerMock rc2 = new ReentrantControllerMock(mpId, address(morpho));
+        vm.prank(OWNER);
+        _lido().createMarket(mp, address(rc2), true);
+
+        loanToken.setBalance(address(this), 110e18);
+        morpho.supply(dp, 100e18, 0, address(this), hex"");
+
+        _armAndExpect(abi.encodeCall(IMorphoBase.supply, (mp, 1e18, 0, address(rc), hex"")));
+        morpho.supply(dp, 10e18, 0, address(this), hex"");
+
+        assertEq(
+            morpho.supplyShares(mpId, address(rc)), 1e18 * SharesMathLib.VIRTUAL_SHARES, "controlled B supply applied"
+        );
+        assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "outer supply applied");
+    }
+
+    function testSameMarketReentryThroughOtherMarketHookBlocked() public {
+        // Market dp's lock is held for the whole hook, including a nested excursion into another market:
+        // reentering dp from inside the second market's hook still reverts.
+        MarketParams memory mp = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(0),
+            lltv: 0.4 ether
+        });
+        Id mpId = mp.id();
+        ReentrantControllerMock rc2 = new ReentrantControllerMock(mpId, address(morpho));
+        vm.prank(OWNER);
+        _lido().createMarket(mp, address(rc2), true);
+
+        loanToken.setBalance(address(this), 100e18);
+        morpho.supply(dp, 100e18, 0, address(this), hex"");
+
+        // dp's controller reenters market mp; mp's controller reenters dp, which is still locked.
+        rc.arm(abi.encodeCall(IMorphoBase.supply, (mp, 1e18, 0, address(rc), hex"")));
+        rc2.arm(abi.encodeCall(IMorphoBase.supply, (dp, 1e18, 0, address(rc), hex"")));
+
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
+        morpho.supply(dp, 10e18, 0, address(this), hex"");
+    }
+
     function testFlashLoanAllowedDuringHook() public {
         loanToken.setBalance(address(this), 110e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");

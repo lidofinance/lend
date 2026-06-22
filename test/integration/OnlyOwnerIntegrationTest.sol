@@ -9,6 +9,9 @@ contract OnlyOwnerIntegrationTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
 
+    /* ============================== MORPHO UPSTREAM TESTS ============================== */
+    /* Inherited from morpho-org/morpho-blue @ 1478e9cf, adapted to the LidoLend core. */
+
     function testDeployWithAddressZero() public {
         address morphoImpl = address(new LidoLend());
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
@@ -45,24 +48,6 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         morpho.setOwner(newOwner);
 
         assertEq(morpho.owner(), newOwner, "owner is not set");
-    }
-
-    function testCreateMarketWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz) public {
-        vm.assume(addressFuzz != OWNER);
-
-        vm.prank(addressFuzz);
-        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        morpho.createMarket(marketParamsFuzz);
-    }
-
-    function testCreateMarketWithControllerWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz)
-        public
-    {
-        vm.assume(addressFuzz != OWNER);
-
-        vm.prank(addressFuzz);
-        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        ILidoLend(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
     }
 
     function testSetFeeWhenNotOwner(address addressFuzz, uint256 feeFuzz) public {
@@ -117,5 +102,26 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         morpho.setFeeRecipient(newFeeRecipient);
 
         assertEq(morpho.feeRecipient(), newFeeRecipient);
+    }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Tests for fork-added behavior. */
+
+    function testCreateMarketWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz) public {
+        vm.assume(addressFuzz != OWNER);
+
+        vm.prank(addressFuzz);
+        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
+        morpho.createMarket(marketParamsFuzz);
+    }
+
+    function testCreateMarketWithControllerWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz)
+        public
+    {
+        vm.assume(addressFuzz != OWNER);
+
+        vm.prank(addressFuzz);
+        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
+        ILidoLend(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
     }
 }

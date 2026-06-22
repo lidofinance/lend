@@ -3,9 +3,11 @@ pragma solidity ^0.8.0;
 
 import "../BaseTestWithController.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
+import {EventsLib} from "../../src/libraries/EventsLib.sol";
 
 contract ControllerIntegrationTest is BaseTestWithController {
     using MorphoLib for IMorpho;
+    using MarketParamsLib for MarketParams;
 
     uint8 internal constant SUPPLY = uint8(ILidoLendMarketController.HookEvent.Supply);
     uint8 internal constant BORROW = uint8(ILidoLendMarketController.HookEvent.Borrow);
@@ -14,6 +16,41 @@ contract ControllerIntegrationTest is BaseTestWithController {
     function testCreateMarketBindsController() public {
         assertEq(LidoLend(address(morpho)).marketController(id), address(controller), "controller bound");
         assertTrue(LidoLend(address(morpho)).isSettlementEnabled(id), "settlement enabled");
+    }
+
+    function testCreateMarketEmitsBindingEvents() public {
+        MarketParams memory params = marketParams;
+        params.oracle = makeAddr("BindingOracle"); // fresh id
+        Id newId = params.id();
+        ControllerMock c = new ControllerMock(newId);
+
+        vm.expectEmit(true, true, false, false, address(morpho));
+        emit EventsLib.SetMarketController(newId, address(c));
+        vm.expectEmit(true, false, false, false, address(morpho));
+        emit EventsLib.EnableSettlement(newId);
+
+        vm.prank(OWNER);
+        ILidoLend(address(morpho)).createMarket(params, address(c), true);
+    }
+
+    function testCreateMarketWithoutSettlementSkipsEnableEvent() public {
+        MarketParams memory params = marketParams;
+        params.oracle = makeAddr("NoSettleOracle"); // fresh id
+        Id newId = params.id();
+        ControllerMock c = new ControllerMock(newId);
+
+        vm.recordLogs();
+        vm.prank(OWNER);
+        ILidoLend(address(morpho)).createMarket(params, address(c), false);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 enableSig = keccak256("EnableSettlement(bytes32)");
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != enableSig, "EnableSettlement must not be emitted");
+        }
+
+        assertEq(LidoLend(address(morpho)).marketController(newId), address(c), "controller bound");
+        assertFalse(LidoLend(address(morpho)).isSettlementEnabled(newId), "settlement disabled");
     }
 
     /// @notice The three-argument `createMarket` creates a controlled market: a zero controller is rejected
@@ -44,8 +81,15 @@ contract ControllerIntegrationTest is BaseTestWithController {
         morpho.supply(marketParams, amount, 0, address(this), hex"");
 
         assertGt(morpho.supplyShares(id, address(this)), 0, "supply shares minted");
+        assertEq(Id.unwrap(controller.lastId()), Id.unwrap(id), "hook dispatched into this market");
         assertEq(uint8(controller.lastEvent()), SUPPLY, "last hook is Supply");
         assertEq(controller.eventCount(SUPPLY), 1, "supply hook fired once");
+        ILidoLendMarketController.SupplyHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.SupplyHookData));
+        assertEq(d.caller, address(this), "payload caller");
+        assertEq(d.onBehalf, address(this), "payload onBehalf");
+        assertEq(d.assets, amount, "payload assets");
+        assertEq(d.shares, amount * SharesMathLib.VIRTUAL_SHARES, "payload shares");
     }
 
     function testBorrowFiresBorrowHook() public {
@@ -61,8 +105,16 @@ contract ControllerIntegrationTest is BaseTestWithController {
 
         assertGt(morpho.borrowShares(id, BORROWER), 0, "borrow shares minted");
         assertEq(loanToken.balanceOf(BORROWER), borrowed, "borrower received loan");
+        assertEq(Id.unwrap(controller.lastId()), Id.unwrap(id), "hook dispatched into this market");
         assertEq(uint8(controller.lastEvent()), BORROW, "last hook is Borrow");
         assertEq(controller.eventCount(BORROW), 1, "borrow hook fired once");
+        ILidoLendMarketController.BorrowHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.BorrowHookData));
+        assertEq(d.caller, BORROWER, "payload caller");
+        assertEq(d.onBehalf, BORROWER, "payload onBehalf");
+        assertEq(d.receiver, BORROWER, "payload receiver");
+        assertEq(d.assets, borrowed, "payload assets");
+        assertEq(d.shares, borrowed * SharesMathLib.VIRTUAL_SHARES, "payload shares");
     }
 
     /// @notice Happy path: the borrower holds >50% of supply as debt, so ordinary withdraw

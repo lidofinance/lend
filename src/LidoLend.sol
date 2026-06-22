@@ -89,9 +89,10 @@ contract LidoLend is ILidoLendStaticTyping {
     /// @inheritdoc ILidoLendBase
     bool public isInitialized;
 
-    /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
-    ///      persistent slot, so the upgrade-safe layout is unaffected.
-    bool internal transient _hookInProgress;
+    /// @dev Base slot for the per-market reentrancy locks held while a controller hook executes.
+    ///      The lock is keyed by market id in transient storage (EIP-1153) so a hook on one market
+    ///      gates only that market, leaving actions on other markets reachable.
+    bytes32 private constant HOOK_LOCK_SLOT = keccak256("lidolend.hook.lock");
 
     /* INITIALIZER */
 
@@ -734,18 +735,34 @@ contract LidoLend is ILidoLendStaticTyping {
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
     ///      core fork surface minimal, and the controller decodes per-event in its `on()` handler.
-    /// @dev Doubles as the reentrancy gate, scoped to where hooks exist: on a market with a
-    ///      controller, entering while another controller hook is in flight reverts. A market with
-    ///      no controller is never gated. Nested hooks are impossible: a controlled market reverts
-    ///      here before dispatching its own hook. The lock is released before the calling function
-    ///      writes state and runs Morpho callbacks.
+    /// @dev Doubles as the reentrancy gate, scoped per market: entering a market while its own
+    ///      controller hook is in flight reverts, but actions on other markets stay reachable since
+    ///      each market holds an independent transient lock. A market with no controller is never
+    ///      gated. The lock is released before the calling function writes state and runs Morpho
+    ///      callbacks.
     function _hook(Id id, ILidoLendMarketController.HookEvent e, bytes memory data) internal {
         address controller = marketController[id];
         if (controller != address(0)) {
-            require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
-            _hookInProgress = true;
+            require(!_acquireHookLock(id), ErrorsLib.HOOK_REENTRANCY);
             ILidoLendMarketController(controller).on(id, e, data);
-            _hookInProgress = false;
+            _releaseHookLock(id);
+        }
+    }
+
+    /// @dev Reads, then sets, the market's transient hook lock; returns whether it was already held.
+    function _acquireHookLock(Id id) private returns (bool wasLocked) {
+        bytes32 lockSlot = keccak256(abi.encode(Id.unwrap(id), HOOK_LOCK_SLOT));
+        assembly ("memory-safe") {
+            wasLocked := tload(lockSlot)
+            tstore(lockSlot, 1)
+        }
+    }
+
+    /// @dev Clears the market's transient hook lock once its `on()` dispatch has returned.
+    function _releaseHookLock(Id id) private {
+        bytes32 lockSlot = keccak256(abi.encode(Id.unwrap(id), HOOK_LOCK_SLOT));
+        assembly ("memory-safe") {
+            tstore(lockSlot, 0)
         }
     }
 
