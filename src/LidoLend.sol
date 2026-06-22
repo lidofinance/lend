@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.30;
+pragma solidity 0.8.35;
 
 import {
     Id,
@@ -32,7 +32,7 @@ import {MarketParamsLib} from "./libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
 import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
-import {ILidoLend} from "./interfaces/ILidoLend.sol";
+import {ILidoLendBase, ILidoLendStaticTyping} from "./interfaces/ILidoLend.sol";
 
 /// @title LidoLend
 /// @author Morpho Labs. Modified by Lido.
@@ -41,7 +41,7 @@ import {ILidoLend} from "./interfaces/ILidoLend.sol";
 ///      Optional per-market controllers can enforce additional policy through action hooks. The
 ///      `settle` extension is enabled per market at creation, and only on a market that has a
 ///      controller, so the controller's policy can govern who may be settled and by how much.
-contract LidoLend is ILidoLend {
+contract LidoLend is ILidoLendStaticTyping {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
@@ -82,11 +82,11 @@ contract LidoLend is ILidoLend {
 
     /* FORK STORAGE */
 
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     mapping(Id => address) public marketController;
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     mapping(Id => bool) public isSettlementEnabled;
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     bool public isInitialized;
 
     /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
@@ -100,7 +100,7 @@ contract LidoLend is ILidoLend {
         isInitialized = true;
     }
 
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     function initialize(address newOwner) external {
         require(!isInitialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
@@ -160,7 +160,7 @@ contract LidoLend is ILidoLend {
         _createMarket(marketParams, address(0), false);
     }
 
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement)
         external
         onlyOwner
@@ -448,7 +448,7 @@ contract LidoLend is ILidoLend {
 
     /* SETTLEMENT */
 
-    /// @inheritdoc ILidoLend
+    /// @inheritdoc ILidoLendBase
     function settle(
         MarketParams memory marketParams,
         uint256 supplyAssets,

@@ -108,7 +108,7 @@ Net effect of a settle of `X` in loan value at oracle price `P`. No loan tokens 
 | `borrower` collateral | − `X / P` |
 | `receiver` | + `X / P` collateral |
 
-The routine guards are listed with the function in the reference: the market exists and has settlement enabled, exactly one amount is non-zero, the caller is authorized for `onBehalf`, the borrower has debt, and the cut fits within the borrower's collateral and debt. One gate is specific to settle. After accrual, `debtCanceled` must not exceed `onBehalf`'s settleable supply — its own supply value minus the market's free liquidity (`totalSupplyAssets − totalBorrowAssets`), floored at zero. A lender may therefore settle only the portion of its own supply that an ordinary withdraw cannot serve; the free-liquidity portion must be withdrawn instead. That bound is an accounting quantity rather than a token balance, so flash loans and donations cannot open it. Because it never exceeds `onBehalf`'s own supply, the gate also rejects burning more shares than `onBehalf` owns — cleanly, before the share subtraction, so there is no unguarded arithmetic-panic precondition.
+The routine guards are listed with the function in the reference: the market exists and has settlement enabled, exactly one amount is non-zero, the caller is authorized for `onBehalf`, the borrower has debt, and the cut fits within the borrower's collateral and debt. One gate is specific to settle. After accrual, `debtCanceled` must not exceed `onBehalf`'s settleable supply — its own supply value minus the market's free liquidity (`totalSupplyAssets − totalBorrowAssets`), floored at zero. A lender may therefore settle only the portion of its own supply that an ordinary withdraw cannot serve, and the free-liquidity portion must be withdrawn instead. That bound is an accounting quantity rather than a token balance, so flash loans and donations cannot open it. Because it never exceeds `onBehalf`'s own supply, the gate also rejects burning more shares than `onBehalf` owns — cleanly, before the share subtraction, so there is no unguarded arithmetic-panic precondition.
 
 Illustrative numbers: at an oracle price of `3e36` (one collateral unit is worth three loan units), a lender burns shares worth `debtCanceled = 100` loan units (the share conversion already rounded this down). Collateral seized: `100 × 1e36 / 3e36 = 33` — the fractional `.33` stays with the borrower. Borrow shares burned: shares worth `100`, rounded up, so the borrower's debt falls by at least `100` — the rounding dust favors the protocol.
 
@@ -141,7 +141,7 @@ Storage layout is append-only — under a proxy this is load-bearing:
 | 10 | `isSettlementEnabled` | fork |
 | 11 | `isInitialized` | fork |
 
-The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) requires the Cancun EVM and Solidity 0.8.30 — the fork's deployment floor, above upstream's 0.8.19, so target chains must support it. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib` under `FORK-ADDED` sections.
+The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) requires the Cancun EVM and Solidity 0.8.35 — the fork's deployment floor, above upstream's 0.8.19, so target chains must support it. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib` under `FORK-ADDED` sections.
 
 ## Trust Assumptions
 
@@ -177,7 +177,7 @@ Every other inherited function body is unchanged from upstream — the rest of t
 - Morpho Blue source at the pinned commit and [`morpho-blue-whitepaper.pdf`](./morpho-blue-whitepaper.pdf) — normative for inherited behavior.
 - `FORK_NOTES.md` — canonical record of the fork point and delta.
 - `src/interfaces/ILidoLendMarketController.sol` — normative hook ABI.
-- `src/interfaces/ILidoLend.sol` — typed core surface for consumers.
+- `src/interfaces/ILidoLend.sol` — typed core surface for consumers. `ILidoLend` is struct-returning (`is IMorpho`), so it works directly with the Morpho periphery libraries.
 - API Reference below — the contract reference, generated from the solc AST by `make doc`.
 - Each market controller's own documentation — the policy it enforces through the hooks.
 
@@ -735,7 +735,7 @@ function settle(
 
 Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
 
-Fork-added single-borrower primitive, enabled per market at creation. One of `supplyAssets` or `supplyShares` must be zero, and the loan-asset value of the burned supply position is the borrower debt canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and only when ordinary withdraw liquidity is insufficient to cover the canceled debt. The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller hook is executing.
+Fork-added single-borrower primitive, enabled per market at creation. One of `supplyAssets` or `supplyShares` must be zero, and the loan-asset value of the burned supply position is the borrower debt canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller hook is executing.
 
 ##### `liquidate`
 
@@ -928,10 +928,13 @@ Returns the market's loan assets not currently borrowed. Does not include intere
 ##### `_settleableSupply`
 
 ```solidity
-function _settleableSupply(Id id, address onBehalf) internal view returns (uint256);
+function _settleableSupply(
+    Id id,
+    address onBehalf
+) internal view returns (uint256);
 ```
 
-Returns the portion of `onBehalf`'s supply that exceeds the market's free liquidity (`_availableLiquidity`), floored at zero — the most a `settle` may cancel against it.
+The portion of `onBehalf`'s supply that exceeds the market's freely-withdrawable liquidity, i.e. the most a settle may cancel. Saturating: 0 when the supply is fully covered by liquidity.
 
 ##### `extSloads`
 

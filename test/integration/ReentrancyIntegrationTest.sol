@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 import "../BaseTest.sol";
 
 import {IMorphoBase} from "../../src/interfaces/IMorpho.sol";
-import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
+import {ILidoLend, ILidoLendBase} from "../../src/interfaces/ILidoLend.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 import {ReentrantControllerMock} from "../../src/mocks/ReentrantControllerMock.sol";
 
@@ -152,7 +152,7 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
         uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
-        _armAndExpect(abi.encodeCall(ILidoLend.settle, (dp, 0, slice, address(this), BORROWER, RECEIVER)));
+        _armAndExpect(abi.encodeCall(ILidoLendBase.settle, (dp, 0, slice, address(this), BORROWER, RECEIVER)));
         vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         _lido().settle(dp, 0, slice, address(this), BORROWER, RECEIVER);
     }
