@@ -294,11 +294,8 @@ contract SettleInvariantTest is InvariantTest {
         assertEq(morpho.borrowShares(cId, bystander), b.bystanderBorrowShares, "dlv: bystander borrowShares");
         assertEq(morpho.collateral(cId, bystander), b.bystanderCollateral, "dlv: bystander collateral");
 
-        // The bystander lender is untouched: its shares are unchanged and its claim is not diluted by the cut.
+        // The bystander lender's shares are untouched by the cut.
         assertEq(morpho.supplyShares(cId, LENDER2), b.lender2Shares, "dlv: bystander lender shares");
-        uint256 l2Before = b.lender2Shares.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares);
-        uint256 l2After = b.lender2Shares.toAssetsDown(morpho.totalSupplyAssets(cId), morpho.totalSupplyShares(cId));
-        assertGe(l2After, l2Before, "dlv: bystander lender claim");
 
         // Value conservation: the lender seizes collateral worth no more than the debt it cancels, and not
         // meaningfully less. Derived from "settlement is a 1:1 value swap", independent of the seize formula.

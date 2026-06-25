@@ -163,16 +163,18 @@ library EventsLib {
     /// @param caller The caller of `settle`.
     /// @param onBehalf The supply-side account whose shares are burned.
     /// @param borrower The borrower whose debt and collateral are reduced.
-    /// @param supplyShares The supply shares burned from `onBehalf`.
-    /// @param collateralSeized The collateral seized from `borrower` and sent to the receiver.
-    /// @param debtCanceled The borrow assets canceled from `borrower`.
+    /// @param supplySharesBurned The supply shares burned from `onBehalf`.
+    /// @param borrowAssetsCanceled The borrow assets canceled from `borrower`.
+    /// @param borrowSharesCanceled The borrow shares burned from `borrower`.
+    /// @param seizedAssets The collateral seized from `borrower` and sent to the receiver.
     event Settle(
         Id indexed id,
-        address indexed caller,
+        address caller,
         address indexed onBehalf,
-        address borrower,
-        uint256 supplyShares,
-        uint256 collateralSeized,
-        uint256 debtCanceled
+        address indexed borrower,
+        uint256 supplySharesBurned,
+        uint256 borrowAssetsCanceled,
+        uint256 borrowSharesCanceled,
+        uint256 seizedAssets
     );
 }

@@ -89,10 +89,9 @@ contract LidoLend is ILidoLendStaticTyping {
     /// @inheritdoc ILidoLendBase
     bool public isInitialized;
 
-    /// @dev Base slot for the per-market reentrancy locks held while a controller hook executes.
-    ///      The lock is keyed by market id in transient storage (EIP-1153) so a hook on one market
-    ///      gates only that market, leaving actions on other markets reachable.
-    bytes32 private constant HOOK_LOCK_SLOT = keccak256("lidolend.hook.lock");
+    /// @dev Reentrancy lock held while a controller hook executes. Transient: occupies no
+    ///      persistent slot, so the upgrade-safe layout is unaffected.
+    bool internal transient _hookInProgress;
 
     /* INITIALIZER */
 
@@ -457,7 +456,7 @@ contract LidoLend is ILidoLendStaticTyping {
         address onBehalf,
         address borrower,
         address receiver
-    ) external returns (uint256 collateralSeized, uint256 debtCanceled) {
+    ) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled) {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
@@ -467,27 +466,24 @@ contract LidoLend is ILidoLendStaticTyping {
 
         _accrueInterest(marketParams, id);
 
-        if (supplyAssets > 0) {
-            supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        } else {
-            supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        }
+        if (supplyAssets > 0) supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        else supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
 
         // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
-        debtCanceled = supplyAssets;
+        borrowAssetsCanceled = supplyAssets;
         // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity; the
         // liquid part must be redeemed normally rather than settled.
-        require(debtCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
+        require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         uint256 borrowerRawCollateral = position[id][borrower].collateral;
         require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
 
-        collateralSeized = debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(collateralSeized != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
-        require(collateralSeized <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
+        seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        require(seizedAssets <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
-        uint256 borrowSharesToBurn = debtCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        uint256 borrowSharesToBurn = borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
 
         _hook(
@@ -499,25 +495,29 @@ contract LidoLend is ILidoLendStaticTyping {
                     onBehalf: onBehalf,
                     borrower: borrower,
                     receiver: receiver,
-                    debtCanceled: debtCanceled,
-                    collateralSeized: collateralSeized
+                    supplySharesBurned: supplyShares,
+                    borrowAssetsCanceled: borrowAssetsCanceled,
+                    borrowSharesCanceled: borrowSharesToBurn,
+                    seizedAssets: seizedAssets
                 })
             )
         );
 
         position[id][onBehalf].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, debtCanceled).toUint128();
+        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, borrowAssetsCanceled).toUint128();
 
         position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
         market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, debtCanceled).toUint128();
+        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, borrowAssetsCanceled).toUint128();
 
-        position[id][borrower].collateral -= collateralSeized.toUint128();
+        position[id][borrower].collateral -= seizedAssets.toUint128();
 
-        emit EventsLib.Settle(id, msg.sender, onBehalf, borrower, supplyShares, collateralSeized, debtCanceled);
+        emit EventsLib.Settle(
+            id, msg.sender, onBehalf, borrower, supplyShares, borrowAssetsCanceled, borrowSharesToBurn, seizedAssets
+        );
 
-        IERC20(marketParams.collateralToken).safeTransfer(receiver, collateralSeized);
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, seizedAssets);
     }
 
     /* LIQUIDATION */
@@ -564,7 +564,11 @@ contract LidoLend is ILidoLendStaticTyping {
             ILidoLendMarketController.HookEvent.Liquidate,
             abi.encode(
                 ILidoLendMarketController.LiquidateHookData({
-                    caller: msg.sender, borrower: borrower, seizedAssets: seizedAssets, repaidShares: repaidShares
+                    caller: msg.sender,
+                    borrower: borrower,
+                    seizedAssets: seizedAssets,
+                    repaidAssets: repaidAssets,
+                    repaidShares: repaidShares
                 })
             )
         );
@@ -735,34 +739,16 @@ contract LidoLend is ILidoLendStaticTyping {
 
     /// @dev Single strict-callback dispatch into the controller. ABI-encoded payloads keep the
     ///      core fork surface minimal, and the controller decodes per-event in its `on()` handler.
-    /// @dev Doubles as the reentrancy gate, scoped per market: entering a market while its own
-    ///      controller hook is in flight reverts, but actions on other markets stay reachable since
-    ///      each market holds an independent transient lock. A market with no controller is never
-    ///      gated. The lock is released before the calling function writes state and runs Morpho
-    ///      callbacks.
+    /// @dev Doubles as the reentrancy gate: while any controller hook is in flight, re-entering any action
+    ///      reverts — including actions on markets with no controller. The lock is released before the calling
+    ///      function writes state and runs Morpho callbacks.
     function _hook(Id id, ILidoLendMarketController.HookEvent e, bytes memory data) internal {
+        require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
         address controller = marketController[id];
         if (controller != address(0)) {
-            require(!_acquireHookLock(id), ErrorsLib.HOOK_REENTRANCY);
+            _hookInProgress = true;
             ILidoLendMarketController(controller).on(id, e, data);
-            _releaseHookLock(id);
-        }
-    }
-
-    /// @dev Reads, then sets, the market's transient hook lock; returns whether it was already held.
-    function _acquireHookLock(Id id) private returns (bool wasLocked) {
-        bytes32 lockSlot = keccak256(abi.encode(Id.unwrap(id), HOOK_LOCK_SLOT));
-        assembly ("memory-safe") {
-            wasLocked := tload(lockSlot)
-            tstore(lockSlot, 1)
-        }
-    }
-
-    /// @dev Clears the market's transient hook lock once its `on()` dispatch has returned.
-    function _releaseHookLock(Id id) private {
-        bytes32 lockSlot = keccak256(abi.encode(Id.unwrap(id), HOOK_LOCK_SLOT));
-        assembly ("memory-safe") {
-            tstore(lockSlot, 0)
+            _hookInProgress = false;
         }
     }
 

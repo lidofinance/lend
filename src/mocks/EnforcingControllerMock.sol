@@ -40,13 +40,13 @@ contract EnforcingControllerMock is ILidoLendMarketController {
         ILidoLendMarketController.SettleHookData memory d = abi.decode(data, (ILidoLendMarketController.SettleHookData));
 
         // The hook fires before the core writes state, so these reads are the pre-cut position.
-        // The core has already checked collateralSeized <= collateral and the burn <= debt.
+        // The core has already checked seizedAssets <= collateral and the burn <= debt.
         uint256 collateral = _morpho.collateral(id, d.borrower);
         uint256 debt = _morpho.borrowShares(id, d.borrower)
             .toAssetsUp(_morpho.totalBorrowAssets(id), _morpho.totalBorrowShares(id));
 
-        uint256 postCollateralValue = (collateral - d.collateralSeized).mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
-        uint256 postDebt = debt > d.debtCanceled ? debt - d.debtCanceled : 0;
+        uint256 postCollateralValue = (collateral - d.seizedAssets).mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
+        uint256 postDebt = debt > d.borrowAssetsCanceled ? debt - d.borrowAssetsCanceled : 0;
 
         require(postCollateralValue >= postDebt, "controller: would be insolvent");
     }

@@ -311,6 +311,7 @@ contract HooksIntegrationTest is BaseTestWithController {
         assertEq(d.caller, LIQUIDATOR, "caller");
         assertEq(d.borrower, BORROWER, "borrower");
         assertEq(d.seizedAssets, 10e18, "seizedAssets");
+        assertGt(d.repaidAssets, 0, "repaidAssets resolved");
         assertGt(d.repaidShares, 0, "repaidShares resolved");
     }
 

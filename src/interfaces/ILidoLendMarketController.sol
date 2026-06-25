@@ -106,11 +106,13 @@ interface ILidoLendMarketController {
     /// @param caller The liquidator, and the address the seized collateral goes to.
     /// @param borrower The position being liquidated.
     /// @param seizedAssets The collateral-token amount seized, after resolution.
+    /// @param repaidAssets The loan-token debt repaid, after resolution.
     /// @param repaidShares The borrow shares repaid, after resolution.
     struct LiquidateHookData {
         address caller;
         address borrower;
         uint256 seizedAssets;
+        uint256 repaidAssets;
         uint256 repaidShares;
     }
 
@@ -119,15 +121,19 @@ interface ILidoLendMarketController {
     /// @param onBehalf The address whose supply shares are burned.
     /// @param borrower The address whose debt is canceled and collateral seized.
     /// @param receiver The address receiving the seized collateral.
-    /// @param debtCanceled The loan-token debt canceled, computed in core.
-    /// @param collateralSeized The collateral-token amount seized, computed in core.
+    /// @param supplySharesBurned The supply shares burned from onBehalf, after resolution.
+    /// @param borrowAssetsCanceled The loan-token debt canceled, computed in core.
+    /// @param borrowSharesCanceled The borrow shares burned from borrower, computed in core.
+    /// @param seizedAssets The collateral-token amount seized, computed in core.
     struct SettleHookData {
         address caller;
         address onBehalf;
         address borrower;
         address receiver;
-        uint256 debtCanceled;
-        uint256 collateralSeized;
+        uint256 supplySharesBurned;
+        uint256 borrowAssetsCanceled;
+        uint256 borrowSharesCanceled;
+        uint256 seizedAssets;
     }
 
     /// @notice The single market id this controller manages. Checked at market binding.

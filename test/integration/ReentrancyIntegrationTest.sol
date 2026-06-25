@@ -157,22 +157,20 @@ contract ReentrancyIntegrationTest is BaseTest {
         _lido().settle(dp, 0, slice, address(this), BORROWER, RECEIVER);
     }
 
-    function testHooklessMarketActionAllowedDuringHook() public {
+    function testHooklessMarketActionBlockedDuringHook() public {
         loanToken.setBalance(address(this), 110e18);
         morpho.supply(dp, 100e18, 0, address(this), hex"");
 
-        // The gate is scoped to controlled markets: an action on a market with no controller is never
-        // gated, even mid-hook, and behaves exactly as upstream.
+        // The lock is global: while a controller hook is in flight, even an action on a market with no
+        // controller reverts.
         _armAndExpect(abi.encodeCall(IMorphoBase.supply, (marketParams, 1e18, 0, address(rc), hex"")));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
-
-        assertEq(morpho.supplyShares(id, address(rc)), 1e18 * SharesMathLib.VIRTUAL_SHARES, "hookless supply applied");
-        assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "outer supply applied");
     }
 
-    function testOtherControlledMarketActionAllowedDuringHook() public {
-        // The lock is per market: a second controlled market holds its own lock, so reentering it
-        // mid-hook is allowed even though reentering the hooked market itself would revert.
+    function testOtherControlledMarketActionBlockedDuringHook() public {
+        // The lock is global: while any controller hook is in flight, an action on any *other*
+        // controlled market reverts too, since its `_hook` sees the same lock already held.
         MarketParams memory mp = MarketParams({
             loanToken: address(loanToken),
             collateralToken: address(collateralToken),
@@ -180,21 +178,15 @@ contract ReentrancyIntegrationTest is BaseTest {
             irm: address(0),
             lltv: 0.4 ether
         });
-        Id mpId = mp.id();
-        ReentrantControllerMock rc2 = new ReentrantControllerMock(mpId, address(morpho));
+        ReentrantControllerMock rc2 = new ReentrantControllerMock(mp.id(), address(morpho));
         vm.prank(OWNER);
         _lido().createMarket(mp, address(rc2), true);
 
-        loanToken.setBalance(address(this), 110e18);
-        morpho.supply(dp, 100e18, 0, address(this), hex"");
+        loanToken.setBalance(address(this), 10e18);
 
         _armAndExpect(abi.encodeCall(IMorphoBase.supply, (mp, 1e18, 0, address(rc), hex"")));
+        vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
         morpho.supply(dp, 10e18, 0, address(this), hex"");
-
-        assertEq(
-            morpho.supplyShares(mpId, address(rc)), 1e18 * SharesMathLib.VIRTUAL_SHARES, "controlled B supply applied"
-        );
-        assertEq(morpho.supplyShares(did, address(this)), 110e18 * SharesMathLib.VIRTUAL_SHARES, "outer supply applied");
     }
 
     function testSameMarketReentryThroughOtherMarketHookBlocked() public {
