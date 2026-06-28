@@ -95,7 +95,9 @@ contract SettleMathTest is BaseTestWithController {
         );
     }
 
-    // The liquidity gate fires when debtCanceled > free liquidity; the boundary is tight (+1 reverts, exact passes).
+    // The settleable supply is the cut's tight bound: settling exactly it passes, one wei more reverts. In this
+    // single-borrower fixture settleable equals the borrower's debt, so the extra wei is caught by the debt cap
+    // (EXCEEDS_DEBT); the liquidity gate's own boundary is exercised in the invariant suite.
     function testSettleLiquidityGateBoundary(uint256 priceSeed) public {
         _setFuzzedPrice(priceSeed);
         _openPosition(100e18, 100e18, 70e18);
@@ -105,12 +107,15 @@ contract SettleMathTest is BaseTestWithController {
         uint256 settleableSupply = 100e18 - freeLiquidity;
         assertEq(settleableSupply, 70e18, "settleable supply");
 
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
+        // Under the two-anchor API this supply slice cancels 70e18 + 1 of debt, whose borrowSharesToBurn
+        // (70e18*VS + 1e6) exceeds BORROWER's 70e18*VS holding, so the debt cap fires before the liquidity
+        // gate (new check order: EXCEEDS_DEBT precedes LIQUIDITY_AVAILABLE).
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
         _lido()
             .settle(
                 marketParams,
-                0,
                 (settleableSupply + 1) * SharesMathLib.VIRTUAL_SHARES,
+                0,
                 address(this),
                 BORROWER,
                 RECEIVER
@@ -118,21 +123,24 @@ contract SettleMathTest is BaseTestWithController {
 
         uint256 lenderSharesBefore = morpho.supplyShares(id, address(this));
         uint256 sliceShares = settleableSupply * SharesMathLib.VIRTUAL_SHARES;
-        (uint256 seizedAssets,) = _lido().settle(marketParams, 0, sliceShares, address(this), BORROWER, RECEIVER);
+        (uint256 seizedAssets,) = _lido().settle(marketParams, sliceShares, 0, address(this), BORROWER, RECEIVER);
         assertEq(seizedAssets, _seizedFor(settleableSupply), "seized the cancelled debt's worth of collateral");
         assertEq(morpho.supplyShares(id, address(this)), lenderSharesBefore - sliceShares, "lender shares reduced");
     }
 
-    // Supplying assets directly (not shares) yields debtCanceled == the supplied amount exactly.
-    function testSettleByAssetsInput(uint256 priceSeed) public {
+    // To cancel a target asset amount of debt, pass the equivalent supply shares. The supply index is
+    // 1:1 here, so `toAssetsDown(toSharesUp(40e18)) == 40e18` exactly and debtCanceled lands on the
+    // asset amount.
+    function testSettleToTargetAssetAmount(uint256 priceSeed) public {
         _setFuzzedPrice(priceSeed);
         _openPosition(100e18, 100e18, 70e18); // free liquidity = 30e18
         uint256 settleAssets = 40e18; // > free liquidity, within the borrower's 70e18 debt
+        uint256 supplyShares = settleAssets.toSharesUp(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
 
         (uint256 seizedAssets, uint256 canceledAssets) =
-            _lido().settle(marketParams, settleAssets, 0, address(this), BORROWER, RECEIVER);
+            _lido().settle(marketParams, supplyShares, 0, address(this), BORROWER, RECEIVER);
 
-        assertEq(canceledAssets, settleAssets, "debtCanceled equals the supplyAssets input");
+        assertEq(canceledAssets, settleAssets, "debtCanceled equals the supplyShares' asset value");
         assertEq(seizedAssets, _seizedFor(settleAssets), "seized the cancelled debt's worth of collateral");
     }
 
@@ -143,7 +151,7 @@ contract SettleMathTest is BaseTestWithController {
         _openPosition(100e18, 200e18, 100e18);
         oracle.setPrice(MAX_COLLATERAL_PRICE);
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL));
-        _lido().settle(marketParams, 0, 1 * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
+        _lido().settle(marketParams, 1 * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
     }
 
     // debtCanceled 60e18 → collateralSeized 120e18 > 100e18 collateral at half price.
@@ -151,7 +159,7 @@ contract SettleMathTest is BaseTestWithController {
         _openPosition(100e18, 100e18, 70e18);
         oracle.setPrice(ORACLE_PRICE_SCALE / 2); // collateral now worth 50e18
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL));
-        _lido().settle(marketParams, 0, 60e18 * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
+        _lido().settle(marketParams, 60e18 * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
     }
 
     // A second borrower shrinks free liquidity so the lender's settleable supply rises above BORROWER's
@@ -167,7 +175,7 @@ contract SettleMathTest is BaseTestWithController {
 
         // debtCanceled 80e18 clears the gate (<= 95) but burns more than BORROWER's 70e18 debt.
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
-        _lido().settle(marketParams, 0, 80e18 * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER);
+        _lido().settle(marketParams, 80e18 * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
     }
 
     // Full arithmetic verification: pins every delta and both rounding directions across fuzzed prices,
@@ -215,7 +223,7 @@ contract SettleMathTest is BaseTestWithController {
         vars.borrowSharesBefore = morpho.borrowShares(id, BORROWER);
 
         (vars.actualSeized, vars.actualCanceled) =
-            _lido().settle(marketParams, 0, vars.sliceShares, address(this), BORROWER, RECEIVER);
+            _lido().settle(marketParams, vars.sliceShares, 0, address(this), BORROWER, RECEIVER);
 
         // Exact arithmetic (pins rounding direction).
         assertEq(vars.actualCanceled, vars.debtCanceled, "return debtCanceled");
@@ -248,67 +256,76 @@ contract SettleMathTest is BaseTestWithController {
         vm.warp(block.timestamp + 30 days);
         assertEq(morpho.lastUpdate(marketId), staleUpdate, "precondition: interest pending, unrealized");
 
-        _lido().settle(params, 1e18, 0, address(this), BORROWER, RECEIVER);
+        _lido()
+            .settle(
+                params,
+                uint256(1e18).toSharesUp(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId)),
+                0,
+                address(this),
+                BORROWER,
+                RECEIVER
+            );
 
         assertEq(morpho.lastUpdate(marketId), block.timestamp, "settle realized pending interest");
     }
 
-    // A fully-settleable position cannot be closed because the debt-cap rounds the share burn UP past
-    // the borrower's holding. To cancel a borrower's entire debt the caller must pass its asset value
-    // rounded up (toAssetsUp of their shares); the cap then converts that back with toSharesUp and
-    // overshoots, reverting with SETTLEMENT_EXCEEDS_DEBT. This test FAILS on the current code; it passes
-    // once the burn is capped to the borrower's shares (min(toSharesUp(...), borrowShares)).
-    //
-    // Setup: two borrowers, 2 wei each (100% utilization). After ~82 days the total debt drifts 4 -> 5:
-    //   totalBorrowAssets = 5, totalBorrowShares = 4e6, each borrower holds 2e6 shares.
-    //
-    // BORROWER's 2e6 shares are worth toAssetsUp(2e6, 5, 4e6) = ceil(2.4) = 3 wei — the amount that must
-    // be cancelled to clear all 2e6 shares. But the cap converts it back to:
-    //   toSharesUp(3, 5, 4e6) = ceil(15e6 / 6) = 2_500_000 > 2e6  → reverts
-    // (toSharesDown would give floor(2.5e6) = 2_500_000 too — same revert; only capping the burn fixes it.)
-    //
-    // A second borrower keeps the lender's settleable supply (4 wei) above the 3-wei cut so the liquidity
-    // gate clears and only the debt-cap decides the outcome.
-    /// @dev Dumps the market totals and BORROWER's position so each step is visible with `-vv`.
+    /// @dev Dumps market totals and both borrowers' debt so each step is visible with `-vv`.
     function _dump(string memory step, Id marketId, address borrower2) internal {
         emit log_string(step);
-        emit log_named_uint("  totalSupplyAssets", morpho.totalSupplyAssets(marketId));
-        emit log_named_uint("  totalSupplyShares", morpho.totalSupplyShares(marketId));
-        emit log_named_uint("  totalBorrowAssets", morpho.totalBorrowAssets(marketId));
-        emit log_named_uint("  totalBorrowShares", morpho.totalBorrowShares(marketId));
+        emit log_named_uint("  totalSupplyAssets ", morpho.totalSupplyAssets(marketId));
+        emit log_named_uint("  totalSupplyShares ", morpho.totalSupplyShares(marketId));
+        emit log_named_uint("  totalBorrowAssets ", morpho.totalBorrowAssets(marketId));
+        emit log_named_uint("  totalBorrowShares ", morpho.totalBorrowShares(marketId));
         emit log_named_uint("  lender supplyShares", morpho.supplyShares(marketId, address(this)));
-        emit log_named_uint("  BORROWER borrowShares", morpho.borrowShares(marketId, BORROWER));
-        emit log_named_uint("  borrower2 borrowShares", morpho.borrowShares(marketId, borrower2));
+        emit log_named_uint("  BORROWER borrowSh ", morpho.borrowShares(marketId, BORROWER));
+        emit log_named_uint("  BORROWER debt(ast)", _debtAssets(marketId, BORROWER));
+        emit log_named_uint("  borrower2 borrowSh", morpho.borrowShares(marketId, borrower2));
+        emit log_named_uint("  borrower2 debt(ast)", _debtAssets(marketId, borrower2));
     }
 
-    function testSettleClosePositionRoundsBurnPastHolding() public {
-        MarketParams memory params = MarketParams({
+    /// @dev A borrower's debt valued up to loan assets at the market's current index.
+    function _debtAssets(Id marketId, address borrower) internal view returns (uint256) {
+        return morpho.borrowShares(marketId, borrower)
+            .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
+    }
+
+    /// @dev Assets-per-share scaled by 1e18 — a readable "share price" for logs and direction checks.
+    function _index(uint256 assets, uint256 shares) internal pure returns (uint256) {
+        return shares == 0 ? 0 : (assets * 1e18) / shares;
+    }
+
+    /// @dev A controlled 1:1 market driven to a drifted index where a borrower's whole holding can no
+    ///      longer be cancelled by its asset value: `toAssetsUp(holding)` converted back overshoots the
+    ///      holding. Two borrowers keep the lender's settleable supply above the cut so only the debt-cap
+    ///      decides the outcome. Dumps each step so the drifted state is visible with `-vv`.
+    function _dustyTwoBorrowerMarket() internal returns (MarketParams memory params, Id marketId, address borrower2) {
+        params = MarketParams({
             loanToken: address(loanToken),
             collateralToken: address(collateralToken),
             oracle: address(oracle),
             irm: address(irm),
             lltv: 0.9 ether
         });
-        Id marketId = params.id();
+        marketId = params.id();
         ControllerMock ctrl = new ControllerMock(marketId);
         vm.prank(OWNER);
         _lido().createMarket(params, address(ctrl), true);
         oracle.setPrice(ORACLE_PRICE_SCALE); // 1:1, isolate share rounding from the price leg
 
-        address borrower2 = makeAddr("Borrower2");
+        borrower2 = makeAddr("Borrower2");
 
         loanToken.setBalance(address(this), 12);
         morpho.supply(params, 12, 0, address(this), hex"");
         _dump("after lender supplies 12 wei", marketId, borrower2);
 
         collateralToken.setBalance(BORROWER, 1e18);
-        collateralToken.setBalance(borrower2, 1e18);
         vm.startPrank(BORROWER);
         morpho.supplyCollateral(params, 1e18, BORROWER, hex"");
         morpho.borrow(params, 7, 0, BORROWER, BORROWER);
         vm.stopPrank();
         _dump("after BORROWER borrows 7 wei", marketId, borrower2);
 
+        collateralToken.setBalance(borrower2, 1e18);
         vm.startPrank(borrower2);
         collateralToken.approve(address(morpho), type(uint256).max);
         morpho.supplyCollateral(params, 1e18, borrower2, hex"");
@@ -318,62 +335,290 @@ contract SettleMathTest is BaseTestWithController {
 
         vm.warp(block.timestamp + 30 days);
         morpho.accrueInterest(params);
-        _dump("after 82 days + accrue (debt drifts 12 -> 13)", marketId, borrower2);
+        _dump("after 30 days + accrue (debt drifts up)", marketId, borrower2);
 
-        // Pin the drifted state the comment reasons about, so a change here fails loudly here.
-        assertEq(morpho.totalBorrowAssets(marketId), 13, "total debt drifted 12 -> 13 wei");
-        assertEq(morpho.totalBorrowShares(marketId), 12e6, "total borrow shares == 12e6");
-        assertEq(morpho.borrowShares(marketId, BORROWER), 7e6, "BORROWER holds 2e6 shares");
+        // Pin the drifted state, so an IRM/timing change fails loudly right here.
+        assertEq(morpho.totalBorrowAssets(marketId), 13, "drifted total debt");
+        assertEq(morpho.totalBorrowShares(marketId), 12e6, "total borrow shares");
+        assertEq(morpho.borrowShares(marketId, BORROWER), 7e6, "BORROWER holds 7e6 shares");
+        assertEq(morpho.borrowShares(marketId, borrower2), 5e6, "borrower2 holds 5e6 shares");
+    }
 
-        // To clear all of BORROWER's 2e6 shares, cancel their debt valued up (3 wei).
-        uint256 fullDebt = morpho.borrowShares(marketId, BORROWER)
-            .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
-        assertEq(fullDebt, 7, "b1 full debt valued up is 7 wei");
+    // The borrow-share anchor closes a borrower's whole position even when its asset value cannot. On a
+    // drifted index `toAssetsUp(holding)` converts back (UP or DOWN) to more shares than held, so a
+    // value-anchored cut reverts SETTLEMENT_EXCEEDS_DEBT; passing the holding as `borrowShares` burns it
+    // exactly and zeroes the position.
+    function testSettleClosePositionRoundsBurnPastHolding() public {
+        (MarketParams memory params, Id marketId, address borrower2) = _dustyTwoBorrowerMarket();
 
-        // To clear all of BORROWER's 2e6 shares, cancel their debt valued up (3 wei).
-        uint256 fullDebt1 = morpho.borrowShares(marketId, borrower2)
-            .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
-        assertEq(fullDebt1, 6, "b2 full debt valued up is 6 wei");
+        Vars memory v;
+        v.totalBorrowAssets = morpho.totalBorrowAssets(marketId);
+        v.totalBorrowShares = morpho.totalBorrowShares(marketId);
+        uint256 held = morpho.borrowShares(marketId, BORROWER); // 7e6
 
-        // Show exactly why the settle of `fullDebt` reverts: the cap converts it back to more shares
-        // than BORROWER holds (rounding direction is irrelevant — the overshoot is ~500k shares).
-        emit log_string("attempting to close BORROWER by settling fullDebt");
-        emit log_named_uint("  settle amount (wei)", fullDebt);
-        emit log_named_uint(
-            "  toSharesUp(fullDebt)  -> shares to burn",
-            fullDebt.toSharesUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
-        );
-        emit log_named_uint(
-            "  toSharesDown(fullDebt)-> shares to burn",
-            fullDebt.toSharesDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
-        );
-        emit log_named_uint("  BORROWER actually holds", morpho.borrowShares(marketId, BORROWER));
-
-        // BUG: the cap burns toSharesUp(3) = 2.5e6 > 2e6 and reverts; capping the burn would close it.
-
-        // _lido().settle(params, fullDebt, 0, address(this), BORROWER, RECEIVER);
-        emit log_named_uint("supplier shares", morpho.supplyShares(marketId, address(this)));
-        _lido().settle(params, fullDebt, 0, address(this), BORROWER, RECEIVER);
-        emit log_named_uint(
-            "borrower balance",
-            morpho.borrowShares(marketId, BORROWER)
-                .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        // P1: the holding's asset value, converted back, overshoots the holding in BOTH directions.
+        uint256 fullDebt = held.toAssetsUp(v.totalBorrowAssets, v.totalBorrowShares); // 8
+        emit log_named_uint("BORROWER fullDebt = toAssetsUp(held)", fullDebt);
+        emit log_named_uint("  toSharesUp(fullDebt)  ", fullDebt.toSharesUp(v.totalBorrowAssets, v.totalBorrowShares));
+        emit log_named_uint("  toSharesDown(fullDebt)", fullDebt.toSharesDown(v.totalBorrowAssets, v.totalBorrowShares));
+        emit log_named_uint("  BORROWER actually holds", held);
+        assertEq(fullDebt, 8, "fullDebt valued up");
+        assertGt(fullDebt.toSharesUp(v.totalBorrowAssets, v.totalBorrowShares), held, "toSharesUp overshoots holding");
+        assertGt(
+            fullDebt.toSharesDown(v.totalBorrowAssets, v.totalBorrowShares),
+            held,
+            "toSharesDown overshoots too (direction irrelevant)"
         );
 
-        emit log_string("1");
+        // P1b: a value-anchored cut (a supply slice worth fullDebt) reverts on the debt-cap.
+        {
+            uint256 valueSlice =
+                fullDebt.toSharesUp(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId));
+            emit log_named_uint("value-anchored supply slice", valueSlice);
+            vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
+            _lido().settle(params, valueSlice, 0, address(this), BORROWER, RECEIVER);
+        }
 
+        // P2/P3/P5: the borrow-share anchor closes BORROWER to exactly zero.
+        v.totalSupplyAssets = morpho.totalSupplyAssets(marketId);
+        v.totalSupplyShares = morpho.totalSupplyShares(marketId);
+        v.lenderShares = morpho.supplyShares(marketId, address(this));
+        v.borrowSharesBefore = _debtAssets(marketId, borrower2); // borrower2 debt valued up: 6
+
+        (v.actualSeized, v.actualCanceled) = _lido().settle(params, 0, held, address(this), BORROWER, RECEIVER);
+        _dump("after closing BORROWER via the borrowShares anchor", marketId, borrower2);
+        emit log_named_uint("returned seizedAssets", v.actualSeized);
+        emit log_named_uint("returned borrowAssetsCanceled", v.actualCanceled);
+
+        assertEq(morpho.borrowShares(marketId, BORROWER), 0, "BORROWER closed to zero");
+        assertEq(v.actualCanceled, fullDebt, "canceled == toAssetsUp(holding)");
+        assertEq(v.actualSeized, _seizedFor(fullDebt), "seized == cut at oracle price");
+        assertEq(morpho.totalBorrowShares(marketId), v.totalBorrowShares - held, "total borrow shares -= holding");
+        assertEq(
+            morpho.totalBorrowAssets(marketId),
+            v.totalBorrowAssets - v.actualCanceled,
+            "total borrow assets -= canceled"
+        );
+        assertEq(
+            v.lenderShares - morpho.supplyShares(marketId, address(this)),
+            v.actualCanceled.toSharesUp(v.totalSupplyAssets, v.totalSupplyShares),
+            "supply burn derived from the cut"
+        );
+
+        // The remaining borrower keeps its shares; its debt drifts 6 -> 5 because the closer absorbed the
+        // round-up (paid 8 for a ~7.58 position). borrower2 now owns the whole remaining pool.
+        emit log_named_uint("borrower2 debt(ast) before close", v.borrowSharesBefore);
+        emit log_named_uint("borrower2 debt(ast) after close", _debtAssets(marketId, borrower2));
+        assertEq(morpho.borrowShares(marketId, borrower2), 5e6, "borrower2 shares untouched");
+        assertEq(v.borrowSharesBefore, 6, "borrower2 debt before close");
+        assertEq(_debtAssets(marketId, borrower2), 5, "borrower2 debt after close (closer ate the round-up)");
+        assertEq(
+            _debtAssets(marketId, borrower2), morpho.totalBorrowAssets(marketId), "borrower2 owns the remaining pool"
+        );
+
+        // --- rounding ledger: who pays, who receives -----------------------------------------
+        // Before the cut the borrowers' rounded-up debts overcount the pool by 1 (8 + 6 = 14 > 13). That
+        // overlapping wei is exactly what a value-anchored close could never land on.
+        assertEq(fullDebt + v.borrowSharesBefore, 14, "rounded-up debts sum to 14");
+        assertGt(fullDebt + v.borrowSharesBefore, v.totalBorrowAssets, "...overcounting the 13-wei pool");
+        // The closing lender PAYS: burns the full 8 (toSharesUp) for BORROWER's ~7.58-fair holding.
+        // borrower2 RECEIVES: 1 wei of relief (6 -> 5). Nothing is minted.
+        emit log_named_uint(
+            "lender PAID: supply burned (sh)", v.lenderShares - morpho.supplyShares(marketId, address(this))
+        );
+        emit log_named_uint("lender PAID: assets (canceled) ", v.actualCanceled);
+        emit log_named_uint("borrower2 GOT: relief (wei)    ", v.borrowSharesBefore - _debtAssets(marketId, borrower2));
+        assertEq(v.borrowSharesBefore - _debtAssets(marketId, borrower2), 1, "borrower2 relieved by 1 wei");
+
+        // --- borrow / supply share price, before vs after (assets-per-share x1e18) ------------
+        emit log_named_uint("borrow price before", _index(v.totalBorrowAssets, v.totalBorrowShares));
+        emit log_named_uint(
+            "borrow price after ", _index(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
+        emit log_named_uint("supply price before", _index(v.totalSupplyAssets, v.totalSupplyShares));
+        emit log_named_uint(
+            "supply price after ", _index(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId))
+        );
+        // Borrow index deflates (borrowers relieved), supply index inflates (remaining lenders enriched).
+        assertLt(
+            morpho.totalBorrowAssets(marketId) * v.totalBorrowShares,
+            v.totalBorrowAssets * morpho.totalBorrowShares(marketId),
+            "borrow price fell"
+        );
+        assertGt(
+            morpho.totalSupplyAssets(marketId) * v.totalSupplyShares,
+            v.totalSupplyAssets * morpho.totalSupplyShares(marketId),
+            "supply price rose"
+        );
+
+        // --- solvency ------------------------------------------------------------------------
+        // Supply and borrow assets fall by the same `canceled`, so free liquidity is invariant and the
+        // protocol stays solvent (supply >= borrow). No value is created or destroyed.
+        assertEq(
+            v.totalSupplyAssets - morpho.totalSupplyAssets(marketId), v.actualCanceled, "supply assets -= canceled"
+        );
+        assertEq(
+            v.totalBorrowAssets - morpho.totalBorrowAssets(marketId), v.actualCanceled, "borrow assets -= canceled"
+        );
+        assertEq(
+            v.totalSupplyAssets - v.totalBorrowAssets,
+            morpho.totalSupplyAssets(marketId) - morpho.totalBorrowAssets(marketId),
+            "free liquidity preserved"
+        );
+        assertGe(morpho.totalSupplyAssets(marketId), morpho.totalBorrowAssets(marketId), "protocol still solvent");
+    }
+
+    // The supply-share anchor lets a lender exit its whole position: passing all of `onBehalf`'s supply
+    // shares burns them to exactly zero. Needs a borrower whose debt exceeds the lender's supply so the
+    // derived debt-share burn stays within the borrower's holding (no EXCEEDS_DEBT).
+    function testSettleClosesLenderSupplyToZero() public {
+        MarketParams memory params = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(irm),
+            lltv: 0.85 ether
+        });
+        Id marketId = params.id();
+        ControllerMock ctrl = new ControllerMock(marketId);
+        vm.prank(OWNER);
+        _lido().createMarket(params, address(ctrl), true);
+        oracle.setPrice(ORACLE_PRICE_SCALE);
+
+        address lenderB = makeAddr("LenderB");
+
+        // Two lenders (50 each); one borrower owes the whole 100 (free liquidity 0). The borrower's debt
+        // (100) exceeds our lender's supply (50), so the lender exits fully without hitting the debt-cap.
+        loanToken.setBalance(address(this), 50);
+        morpho.supply(params, 50, 0, address(this), hex"");
+        loanToken.setBalance(lenderB, 50);
+        vm.startPrank(lenderB);
+        loanToken.approve(address(morpho), type(uint256).max);
+        morpho.supply(params, 50, 0, lenderB, hex"");
+        vm.stopPrank();
+
+        collateralToken.setBalance(BORROWER, 1e18);
         vm.startPrank(BORROWER);
-        _lido().repay(params, 1, 0, BORROWER, hex"");
+        morpho.supplyCollateral(params, 1e18, BORROWER, hex"");
+        morpho.borrow(params, 100, 0, BORROWER, BORROWER);
+        vm.stopPrank();
 
-        emit log_named_uint(
-            "borrower balance",
-            morpho.borrowShares(marketId, BORROWER)
-                .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        emit log_named_uint("lender supplyShares before", morpho.supplyShares(marketId, address(this)));
+        emit log_named_uint("BORROWER borrowShares before", morpho.borrowShares(marketId, BORROWER));
+
+        uint256 tsa = morpho.totalSupplyAssets(marketId);
+        uint256 tba = morpho.totalBorrowAssets(marketId);
+        uint256 tbs = morpho.totalBorrowShares(marketId);
+        uint256 borrowerDebtBefore = _debtAssets(marketId, BORROWER); // 100
+
+        uint256 all = morpho.supplyShares(marketId, address(this));
+        (uint256 seized, uint256 canceled) = _lido().settle(params, all, 0, address(this), BORROWER, RECEIVER);
+
+        emit log_named_uint("lender supplyShares after", morpho.supplyShares(marketId, address(this)));
+        emit log_named_uint("BORROWER borrowShares after", morpho.borrowShares(marketId, BORROWER));
+        emit log_named_uint("BORROWER debt(ast) after", _debtAssets(marketId, BORROWER));
+        emit log_named_uint("returned borrowAssetsCanceled", canceled);
+        emit log_named_uint("returned seizedAssets", seized);
+
+        assertEq(morpho.supplyShares(marketId, address(this)), 0, "lender fully exited");
+        assertEq(canceled, 50, "cancelled the lender's 50 supply value");
+        // The borrower is left half-settled: shares and debt both halved, position still open.
+        assertEq(morpho.borrowShares(marketId, BORROWER), 50e6, "borrower shares halved");
+        assertEq(_debtAssets(marketId, BORROWER), 50, "borrower debt halved to 50");
+        assertEq(morpho.totalBorrowAssets(marketId), 50, "total borrow assets halved");
+
+        // --- solvency (clean: 1:1 with no accrual leaves no rounding) -------------------------
+        assertEq(borrowerDebtBefore, 100, "borrower owed 100 before");
+        assertEq(tsa - morpho.totalSupplyAssets(marketId), canceled, "supply assets -= canceled");
+        assertEq(tba - morpho.totalBorrowAssets(marketId), canceled, "borrow assets -= canceled");
+        assertEq(
+            tsa - tba,
+            morpho.totalSupplyAssets(marketId) - morpho.totalBorrowAssets(marketId),
+            "free liquidity preserved"
         );
+        assertGe(morpho.totalSupplyAssets(marketId), morpho.totalBorrowAssets(marketId), "protocol still solvent");
 
-        emit log_string("2");
+        // The exit removes supply and borrow proportionally, so the borrow share price is unchanged.
+        emit log_named_uint("borrow price before", _index(tba, tbs));
+        emit log_named_uint(
+            "borrow price after ", _index(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
+        assertEq(
+            _index(tba, tbs),
+            _index(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId)),
+            "borrow share price unchanged"
+        );
+    }
 
-        // assertEq(morpho.borrowShares(marketId, BORROWER), 0, "position fully closed");
+    // The borrow-share anchor does not bypass the collateral guard: a dust debt at a high price still
+    // reverts SLICE_TOO_SMALL because the seized collateral rounds to zero.
+    function testSettleCloseBlockedWhenSeizeRoundsToZero() public {
+        (MarketParams memory params, Id marketId,) = _dustyTwoBorrowerMarket();
+        oracle.setPrice(MAX_COLLATERAL_PRICE);
+
+        uint256 held = morpho.borrowShares(marketId, BORROWER);
+        emit log_named_uint("price", oracle.price());
+        emit log_named_uint(
+            "BORROWER fullDebt", held.toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL));
+        _lido().settle(params, 0, held, address(this), BORROWER, RECEIVER);
+    }
+
+    // Edge: a sole borrower who is the whole pool cannot be fully closed when the lender has no surplus.
+    // The debt valued UP (toAssetsUp) is 1 wei above the lender's supply valued DOWN (settleable supply),
+    // so the borrow-anchored close trips the settleable cap (SETTLEMENT_LIQUIDITY_AVAILABLE). A gap is
+    // needed: another borrower, or lender surplus beyond this borrower's debt.
+    function testSettleSoleBorrowerWholePoolBlockedByCap() public {
+        MarketParams memory params = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(irm),
+            lltv: 0.7 ether
+        });
+        Id marketId = params.id();
+        ControllerMock ctrl = new ControllerMock(marketId);
+        vm.prank(OWNER);
+        _lido().createMarket(params, address(ctrl), true);
+        oracle.setPrice(ORACLE_PRICE_SCALE);
+
+        // Sole lender supplies 12, sole borrower borrows the whole 12 (free liquidity 0); drift 12 -> 13.
+        loanToken.setBalance(address(this), 12);
+        morpho.supply(params, 12, 0, address(this), hex"");
+        collateralToken.setBalance(BORROWER, 1e18);
+        vm.startPrank(BORROWER);
+        morpho.supplyCollateral(params, 1e18, BORROWER, hex"");
+        morpho.borrow(params, 12, 0, BORROWER, BORROWER);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 30 days);
+        morpho.accrueInterest(params);
+
+        uint256 held = morpho.borrowShares(marketId, BORROWER);
+        assertEq(held, morpho.totalBorrowShares(marketId), "borrower is the whole pool");
+        assertEq(morpho.totalSupplyAssets(marketId), morpho.totalBorrowAssets(marketId), "free liquidity is zero");
+
+        uint256 canceled = held.toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
+        uint256 settleable = morpho.supplyShares(marketId, address(this))
+            .toAssetsDown(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId));
+        emit log_named_uint("debt valued up   (close needs)", canceled);
+        emit log_named_uint("supply valued down (settleable)", settleable);
+        assertEq(canceled, settleable + 1, "the round-up overshoots settleable by exactly 1 wei");
+
+        // So the borrow-anchored full close trips the settleable cap (asking for 13).
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
+        _lido().settle(params, 0, held, address(this), BORROWER, RECEIVER);
+
+        // But the supply-anchored exit works: it only asks for the claimable supply (12 == settleable), so it
+        // clears the cap, the lender leaves to zero, and the borrower keeps the 1-wei virtual-buffer dust that
+        // no supply can cancel. Closing the borrower to zero is simply impossible here (13 debt vs 12 supply).
+        uint256 lenderShares = morpho.supplyShares(marketId, address(this));
+        (, uint256 canceledViaSupply) = _lido().settle(params, lenderShares, 0, address(this), BORROWER, RECEIVER);
+        emit log_named_uint("canceled via supplyShares", canceledViaSupply);
+        emit log_named_uint("borrower debt left (wei)", _debtAssets(marketId, BORROWER));
+        assertEq(canceledViaSupply, settleable, "supplyShares cancels all claimable supply (12)");
+        assertEq(morpho.supplyShares(marketId, address(this)), 0, "lender fully exited via supplyShares");
+        assertEq(_debtAssets(marketId, BORROWER), 1, "borrower left with the 1-wei buffer dust");
     }
 
     // Settle by SHARES: the burned debt shares, valued back to assets, must equal the cancelled debt exactly;
@@ -393,7 +638,7 @@ contract SettleMathTest is BaseTestWithController {
 
         vars.borrowSharesBefore = morpho.borrowShares(marketId, BORROWER);
         (vars.actualSeized, vars.actualCanceled) =
-            _lido().settle(params, 0, vars.sliceShares, address(this), BORROWER, RECEIVER);
+            _lido().settle(params, vars.sliceShares, 0, address(this), BORROWER, RECEIVER);
         uint256 borrowSharesBurned = vars.borrowSharesBefore - morpho.borrowShares(marketId, BORROWER);
 
         assertEq(
@@ -417,9 +662,9 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(collateralToken.balanceOf(RECEIVER), vars.actualSeized, "receiver collateral");
     }
 
-    // Settle by ASSETS: the burned supply shares, valued back to assets, must equal the cancelled debt exactly;
-    // an under-burn would value back to debtCanceled - 1.
-    function testSettleByAssetsShareRoundingWithInterestFuzz(uint256 elapsed, uint256 assetsSeed) public {
+    // Settle to a target asset amount: the burned supply shares, valued back to assets, must equal the
+    // cancelled debt exactly; an under-burn would value back to debtCanceled - 1.
+    function testSettleAssetTargetRoundingWithInterestFuzz(uint256 elapsed, uint256 assetsSeed) public {
         (MarketParams memory params, Id marketId) = _openMarketWithAccruedInterest(0.625 ether, elapsed);
 
         Vars memory vars;
@@ -430,10 +675,18 @@ contract SettleMathTest is BaseTestWithController {
             bound(assetsSeed, 1, vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares));
         vm.assume(vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares) <= vars.lenderShares);
 
-        (, vars.actualCanceled) = _lido().settle(params, vars.debtCanceled, 0, address(this), BORROWER, RECEIVER);
+        (, vars.actualCanceled) = _lido()
+            .settle(
+                params,
+                vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares),
+                0,
+                address(this),
+                BORROWER,
+                RECEIVER
+            );
         uint256 supplySharesBurned = vars.lenderShares - morpho.supplyShares(marketId, address(this));
 
-        assertEq(vars.actualCanceled, vars.debtCanceled, "assets input == cancelled debt");
+        assertEq(vars.actualCanceled, vars.debtCanceled, "cancelled debt == asset target");
         assertEq(
             supplySharesBurned.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares),
             vars.debtCanceled,

@@ -88,9 +88,6 @@ library ErrorsLib {
     /// @notice Thrown when `settle` is called while ordinary withdraw liquidity still covers the amount.
     string internal constant SETTLEMENT_LIQUIDITY_AVAILABLE = "ordinary liquidity available";
 
-    /// @notice Thrown when the borrower has no debt to settle against.
-    string internal constant SETTLEMENT_NO_DEBT = "borrower has no debt";
-
     /// @notice Thrown when the settlement slice is too small to seize any collateral (rounds to zero).
     string internal constant SETTLEMENT_SLICE_TOO_SMALL = "settlement slice too small";
 
