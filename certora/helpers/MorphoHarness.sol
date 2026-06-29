@@ -79,4 +79,8 @@ contract MorphoHarness is LidoLend {
     function isHealthy(MarketParams memory marketParams, address user) external view returns (bool) {
         return _isHealthy(marketParams, marketParams.id(), user);
     }
+
+    function hookInProgress() external view returns (bool) {
+        return _hookInProgress;
+    }
 }

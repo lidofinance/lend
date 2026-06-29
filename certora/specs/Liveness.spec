@@ -16,6 +16,7 @@ methods {
     function nonce(address) external returns uint256 envfree;
     function isAuthorized(address, address) external returns bool envfree;
     function marketController(MorphoInternalAccess.Id) external returns address envfree;
+    function hookInProgress() external returns bool envfree;
 
     function Util.libId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
     function Util.refId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
@@ -327,6 +328,10 @@ rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 
     // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
     require marketController(id) == 0;
 
+    // The transient reentrancy lock is always clear at the start of a top-level call (transient
+    // storage is zeroed per transaction); it is only set while a controller hook is executing.
+    require !hookInProgress();
+
     // Assume no callback, which still allows to repay all.
     require data.length == 0;
 
@@ -362,6 +367,10 @@ rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint2
     // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
     require marketController(id) == 0;
 
+    // The transient reentrancy lock is always clear at the start of a top-level call (transient
+    // storage is zeroed per transaction); it is only set while a controller hook is executing.
+    require !hookInProgress();
+
     // Assume a full withdraw.
     require shares == supplyShares(id, e.msg.sender);
     // Omit sanity checks.
@@ -390,6 +399,10 @@ rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketPar
 
     // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
     require marketController(id) == 0;
+
+    // The transient reentrancy lock is always clear at the start of a top-level call (transient
+    // storage is zeroed per transaction); it is only set while a controller hook is executing.
+    require !hookInProgress();
 
     // Ensure a full withdrawCollateral.
     require assets == collateral(id, e.msg.sender);
