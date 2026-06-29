@@ -46,6 +46,30 @@ contract SettleIntegrationTest is BaseTestWithController {
         vm.stopPrank();
     }
 
+    /// @dev Open a borrow for an arbitrary borrower (multi-borrower close scenarios need a second position).
+    function _borrow(address borrower, uint256 collateral, uint256 borrowed) internal {
+        collateralToken.setBalance(borrower, collateral);
+        vm.startPrank(borrower);
+        morpho.supplyCollateral(marketParams, collateral, borrower, hex"");
+        morpho.borrow(marketParams, borrowed, 0, borrower, borrower);
+        vm.stopPrank();
+    }
+
+    struct CloseSnap {
+        uint256 held;
+        uint256 canceled;
+        uint256 supplyBurn;
+        uint256 seized;
+        uint256 lenderShares;
+        uint256 totalSupplyShares;
+        uint256 totalSupplyAssets;
+        uint256 totalBorrowShares;
+        uint256 totalBorrowAssets;
+        uint256 collateral;
+        uint256 receiver;
+        uint256 secondBorrow;
+    }
+
     /* ACCESS CONTROL */
 
     function testSettleMarketNotCreated(MarketParams memory mp) public {
@@ -151,6 +175,70 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         assertEq(morpho.nonce(authorizer), 1, "signature consumed");
         assertEq(morpho.supplyShares(id, authorizer), sharesBefore - sharesBefore / 2, "settled via sig authorization");
+    }
+
+    /* BORROW-ANCHORED CLOSE (ported from the two-anchor branch, kept since closing by exact borrow shares is the
+       borrow-driven headline behaviour) */
+
+    /// @dev Closing a borrower by its exact borrowShares zeroes the position (no residual dust), emits the Settle
+    ///      event with the derived supply burn, and leaves a second borrower untouched.
+    function testSettleBorrowAnchoredClosesToZero() public {
+        _supply(100e18);
+        _borrow(BORROWER, 80e18, 60e18);
+        _borrow(ONBEHALF, 60e18, 40e18); // free liquidity 0, settleable > BORROWER debt
+
+        CloseSnap memory s;
+        s.held = morpho.borrowShares(id, BORROWER);
+        s.totalBorrowAssets = morpho.totalBorrowAssets(id);
+        s.totalBorrowShares = morpho.totalBorrowShares(id);
+        s.totalSupplyAssets = morpho.totalSupplyAssets(id);
+        s.totalSupplyShares = morpho.totalSupplyShares(id);
+        s.canceled = s.held.toAssetsUp(s.totalBorrowAssets, s.totalBorrowShares);
+        s.supplyBurn = s.canceled.toSharesUp(s.totalSupplyAssets, s.totalSupplyShares);
+        s.seized = _seizedFor(s.canceled);
+        s.lenderShares = morpho.supplyShares(id, address(this));
+        s.collateral = morpho.collateral(id, BORROWER);
+        s.receiver = collateralToken.balanceOf(RECEIVER);
+        s.secondBorrow = morpho.borrowShares(id, ONBEHALF);
+
+        vm.expectEmit(true, true, true, true, address(morpho));
+        emit EventsLib.Settle(id, address(this), address(this), BORROWER, s.supplyBurn, s.canceled, s.held, s.seized);
+        (uint256 seized, uint256 canceled) = _lido().settle(marketParams, 0, s.held, address(this), BORROWER, RECEIVER);
+
+        assertEq(canceled, s.canceled, "canceled == debt valued up");
+        assertEq(seized, s.seized, "seized at the oracle price");
+        assertEq(morpho.borrowShares(id, BORROWER), 0, "borrower closed to zero");
+        assertEq(s.lenderShares - morpho.supplyShares(id, address(this)), s.supplyBurn, "supply burn derived from cut");
+        assertEq(s.totalSupplyShares - morpho.totalSupplyShares(id), s.supplyBurn, "total supply shares -= burn");
+        assertEq(s.totalSupplyAssets - morpho.totalSupplyAssets(id), canceled, "total supply assets -= canceled");
+        assertEq(s.totalBorrowShares - morpho.totalBorrowShares(id), s.held, "total borrow shares -= holding");
+        assertEq(s.totalBorrowAssets - morpho.totalBorrowAssets(id), canceled, "total borrow assets -= canceled");
+        assertEq(s.collateral - morpho.collateral(id, BORROWER), seized, "collateral seized");
+        assertEq(collateralToken.balanceOf(RECEIVER) - s.receiver, seized, "receiver got the collateral");
+        assertEq(morpho.borrowShares(id, ONBEHALF), s.secondBorrow, "second borrower untouched");
+    }
+
+    /// @dev The Settle hook payload on a full close carries the EXACT borrow-share input (borrowSharesCanceled),
+    ///      the debt valued up, the derived supply burn, and the seized collateral.
+    function testSettleBorrowAnchoredHookPayload() public {
+        _supply(100e18);
+        _borrow(BORROWER, 80e18, 60e18);
+        _borrow(ONBEHALF, 60e18, 40e18);
+
+        uint256 held = morpho.borrowShares(id, BORROWER);
+        uint256 expectedCanceled = held.toAssetsUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
+        uint256 expectedSupplyBurn =
+            expectedCanceled.toSharesUp(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 expectedSeized = _seizedFor(expectedCanceled);
+
+        _lido().settle(marketParams, 0, held, address(this), BORROWER, RECEIVER);
+
+        ILidoLendMarketController.SettleHookData memory d =
+            abi.decode(controller.lastData(), (ILidoLendMarketController.SettleHookData));
+        assertEq(d.supplySharesBurned, expectedSupplyBurn, "supplySharesBurned (derived)");
+        assertEq(d.borrowAssetsCanceled, expectedCanceled, "borrowAssetsCanceled (debt valued up)");
+        assertEq(d.borrowSharesCanceled, held, "borrowSharesCanceled == exact input");
+        assertEq(d.seizedAssets, expectedSeized, "seizedAssets");
     }
 
     /* CONTROLLER */
