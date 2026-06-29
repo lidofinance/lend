@@ -139,11 +139,7 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         // Authorize address(this) to act for `authorizer` via an EIP-712 signature.
         Authorization memory authorization = Authorization({
-            authorizer: authorizer,
-            authorized: address(this),
-            isAuthorized: true,
-            nonce: 0,
-            deadline: block.timestamp
+            authorizer: authorizer, authorized: address(this), isAuthorized: true, nonce: 0, deadline: block.timestamp
         });
         Signature memory sig;
         (sig.v, sig.r, sig.s) = vm.sign(privateKey, SigUtils.getTypedDataHash(morpho.DOMAIN_SEPARATOR(), authorization));
@@ -182,8 +178,7 @@ contract SettleIntegrationTest is BaseTestWithController {
     function testSettleHookPayload() public {
         _openPosition(100e18, 100e18, 70e18);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
-        uint256 expectedCanceled =
-            supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 expectedCanceled = supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
         uint256 expectedSeized = _seizedFor(expectedCanceled);
         uint256 expectedCanceledShares =
             expectedCanceled.toSharesUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
@@ -210,15 +205,21 @@ contract SettleIntegrationTest is BaseTestWithController {
     function testSettleEmitsEvent() public {
         _openPosition(100e18, 100e18, 70e18);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
-        uint256 expectedCanceled =
-            supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 expectedCanceled = supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
         uint256 expectedSeized = _seizedFor(expectedCanceled);
         uint256 expectedCanceledShares =
             expectedCanceled.toSharesUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
 
         vm.expectEmit(true, true, true, true, address(morpho));
         emit EventsLib.Settle(
-            id, address(this), address(this), BORROWER, supplyShares, expectedCanceled, expectedCanceledShares, expectedSeized
+            id,
+            address(this),
+            address(this),
+            BORROWER,
+            supplyShares,
+            expectedCanceled,
+            expectedCanceledShares,
+            expectedSeized
         );
         _lido().settle(marketParams, 0, supplyShares, address(this), BORROWER, RECEIVER);
     }
@@ -286,18 +287,25 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         uint256 supplySharesBefore = morpho.supplyShares(id, address(this));
         uint256 borrowSharesBefore = morpho.borrowShares(id, address(this));
-        uint256 totalBorrowAssetsBefore = morpho.totalBorrowAssets(id);
-        uint256 totalBorrowSharesBefore = morpho.totalBorrowShares(id);
+        uint256 tBABefore = morpho.totalBorrowAssets(id);
+        uint256 tBSBefore = morpho.totalBorrowShares(id);
+        uint256 tSABefore = morpho.totalSupplyAssets(id);
+        uint256 tSSBefore = morpho.totalSupplyShares(id);
 
-        // onBehalf == borrower == address(this).
-        uint256 slice = bound(sliceSeed, supplySharesBefore / 4, (supplySharesBefore * 3) / 4);
+        // onBehalf == borrower == address(this). Borrow-driven: `slice` is a BORROW-share count, burned exactly.
+        uint256 slice = bound(sliceSeed, borrowSharesBefore / 4, (borrowSharesBefore * 3) / 4);
         (uint256 seized, uint256 canceled) =
             _lido().settle(marketParams, 0, slice, address(this), address(this), RECEIVER);
         assertEq(seized, canceled.mulDivDown(ORACLE_PRICE_SCALE, oracle.price()), "seized the cancelled debt's worth");
 
-        uint256 burn = canceled.toSharesUp(totalBorrowAssetsBefore, totalBorrowSharesBefore);
-        assertEq(morpho.supplyShares(id, address(this)), supplySharesBefore - slice, "self: supply shares burned");
-        assertEq(morpho.borrowShares(id, address(this)), borrowSharesBefore - burn, "self: debt shares burned");
+        // The slice burns exactly `slice` borrow shares; the debt is valued up; supply funds it via toSharesUp.
+        assertEq(canceled, slice.toAssetsUp(tBABefore, tBSBefore), "debtCanceled == toAssetsUp(borrowShares)");
+        assertEq(morpho.borrowShares(id, address(this)), borrowSharesBefore - slice, "self: debt shares burned exactly");
+        assertEq(
+            morpho.supplyShares(id, address(this)),
+            supplySharesBefore - canceled.toSharesUp(tSABefore, tSSBefore),
+            "self: supply shares burned"
+        );
         assertEq(morpho.collateral(id, address(this)), collateral - seized, "self: collateral seized");
         assertEq(collateralToken.balanceOf(RECEIVER), seized, "receiver got the seized collateral");
     }

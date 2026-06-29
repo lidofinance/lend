@@ -451,8 +451,8 @@ contract LidoLend is ILidoLendStaticTyping {
     /// @inheritdoc ILidoLendBase
     function settle(
         MarketParams memory marketParams,
-        uint256 supplyAssets,
-        uint256 supplyShares,
+        uint256 borrowAssets,
+        uint256 borrowShares,
         address onBehalf,
         address borrower,
         address receiver
@@ -460,31 +460,45 @@ contract LidoLend is ILidoLendStaticTyping {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
-        require(UtilsLib.exactlyOneZero(supplyAssets, supplyShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(UtilsLib.exactlyOneZero(borrowAssets, borrowShares), ErrorsLib.INCONSISTENT_INPUT);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
         require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
-        if (supplyAssets > 0) supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        else supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
 
-        // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
-        borrowAssetsCanceled = supplyAssets;
-        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity; the
-        // liquid part must be redeemed normally rather than settled.
+        // Borrow-driven: the caller specifies how much of `borrower`'s debt to cancel (the BORROW side), not how
+        // much of `onBehalf`'s supply to spend. Settling by SHARES burns exactly that many borrow shares — pass
+        // `position.borrowShares` to close the position with no rounding overshoot — while settling by ASSETS
+        // cancels that par debt and burns the matching shares rounded down. Either branch values the cancelled
+        // debt with `toAssetsUp` (the same "what the borrower owes" convention as the health/liquidation paths).
+        uint256 borrowSharesToBurn;
+        if (borrowShares > 0) {
+            borrowSharesToBurn = borrowShares;
+            borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        } else {
+            borrowAssetsCanceled = borrowAssets;
+            borrowSharesToBurn = borrowAssets.toSharesDown(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        }
+        // A by-assets slice that rounds down to zero borrow shares would cancel debt assets and seize collateral
+        // without burning any of the borrower's debt shares — reject it as too small.
+        require(borrowSharesToBurn != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+
+        // The cancelled debt is paid at par (no incentive) out of onBehalf's own supply beyond the freely-
+        // withdrawable liquidity; the liquid part must be redeemed normally rather than settled.
         require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
-
         seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
         require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
-        require(seizedAssets <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
+        require(seizedAssets <= position[id][borrower].collateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
-        uint256 borrowSharesToBurn = borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        // require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+        // onBehalf's supply funds the par cancellation: burn the supply shares matching `borrowAssetsCanceled`,
+        // rounded up so the settling lender never under-pays the debt it cancels.
+        uint256 supplyShares =
+            borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
 
         _hook(
             id,
@@ -505,11 +519,13 @@ contract LidoLend is ILidoLendStaticTyping {
 
         position[id][onBehalf].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, borrowAssetsCanceled).toUint128();
+        market[id].totalSupplyAssets =
+            UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, borrowAssetsCanceled).toUint128();
 
         position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
         market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, borrowAssetsCanceled).toUint128();
+        market[id].totalBorrowAssets =
+            UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, borrowAssetsCanceled).toUint128();
 
         position[id][borrower].collateral -= seizedAssets.toUint128();
 

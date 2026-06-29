@@ -45,10 +45,11 @@ contract SettleInvariantTest is InvariantTest {
 
     struct Cut {
         bool ok;
-        uint256 sliceShares;
+        uint256 sliceShares; // borrow shares the cut burns (the settle input)
         uint256 debtCanceled;
         uint256 collateralSeized;
-        uint256 burn;
+        uint256 burn; // == sliceShares (borrow shares burned); kept for assertion readability
+        uint256 supplyBurn; // lender supply shares the core burns to fund the cut
         bool insolvent;
     }
 
@@ -224,11 +225,13 @@ contract SettleInvariantTest is InvariantTest {
         vm.prank(CB);
         morpho.borrow(cParams, borrowAmount, 0, CB, CB);
 
-        // The whole stake (2 * borrowAmount) exceeds the settleable supply (borrowAmount), so the gate blocks.
-        uint256 sliceShares = morpho.supplyShares(cId, LENDER);
+        // Borrow-driven: settling CB's WHOLE debt satisfies the borrow-share cap exactly, but its value exceeds
+        // LENDER's settleable supply (own supply − free liquidity, held below CB's debt by LENDER2's stake), so
+        // the liquidity gate fires first.
+        uint256 borrowShares = morpho.borrowShares(cId, CB);
         vm.prank(LENDER);
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
-        ILidoLend(address(morpho)).settle(cParams, 0, sliceShares, LENDER, CB, LENDER);
+        ILidoLend(address(morpho)).settle(cParams, 0, borrowShares, LENDER, CB, LENDER);
     }
 
     /* INVARIANTS */
@@ -277,8 +280,8 @@ contract SettleInvariantTest is InvariantTest {
         assertEq(debtCanceled, c.debtCanceled, "dlv: return debtCanceled");
 
         // Exact deltas, measured against the contract's own returned values.
-        assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - c.sliceShares, "dlv: lender supplyShares");
-        assertEq(morpho.totalSupplyShares(cId), b.totalSupplyShares - c.sliceShares, "dlv: totalSupplyShares");
+        assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - c.supplyBurn, "dlv: lender supplyShares");
+        assertEq(morpho.totalSupplyShares(cId), b.totalSupplyShares - c.supplyBurn, "dlv: totalSupplyShares");
         assertEq(morpho.totalSupplyAssets(cId), b.totalSupplyAssets - debtCanceled, "dlv: totalSupplyAssets");
         assertEq(morpho.borrowShares(cId, borrower), b.borrowerBorrowShares - c.burn, "dlv: borrower borrowShares");
         assertEq(morpho.totalBorrowShares(cId), b.totalBorrowShares - c.burn, "dlv: totalBorrowShares");
@@ -317,17 +320,29 @@ contract SettleInvariantTest is InvariantTest {
         uint256 tBA = morpho.totalBorrowAssets(cId);
         uint256 tBS = morpho.totalBorrowShares(cId);
 
-        c.sliceShares = bound(sliceSeed, 1, lenderShares);
-        c.debtCanceled = c.sliceShares.toAssetsDown(tSA, tSS);
-        if (c.debtCanceled <= (tSA > tBA ? tSA - tBA : 0)) return c; // liquidity gate
+        // Borrow-driven: the slice is a BORROW-share count, burned exactly; the cancelled debt is valued up.
+        c.sliceShares = bound(sliceSeed, 1, borrowerShares);
+        c.burn = c.sliceShares;
+        c.debtCanceled = c.sliceShares.toAssetsUp(tBA, tBS);
+
+        if (c.debtCanceled == 0) return c;
+        // Liquidity gate: the cancelled debt is funded from LENDER's settleable supply (its value − free
+        // liquidity); only keep cuts the core would accept. Scoped so the temporaries free the stack.
+        {
+            uint256 freeLiquidity = tSA > tBA ? tSA - tBA : 0;
+            uint256 lenderSupplyAssets = lenderShares.toAssetsDown(tSA, tSS);
+            uint256 settleable = lenderSupplyAssets > freeLiquidity ? lenderSupplyAssets - freeLiquidity : 0;
+            if (c.debtCanceled > settleable) return c;
+        }
 
         uint256 price = cOracle.price();
         uint256 collateral = morpho.collateral(cId, borrower);
         c.collateralSeized = c.debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, price);
         if (c.collateralSeized == 0 || c.collateralSeized > collateral) return c;
 
-        c.burn = c.debtCanceled.toSharesUp(tBA, tBS);
-        if (c.burn > borrowerShares) return c;
+        // Supply shares the core burns from LENDER to fund the par cancellation.
+        c.supplyBurn = c.debtCanceled.toSharesUp(tSA, tSS);
+        if (c.supplyBurn > lenderShares) return c;
 
         // Replicate EnforcingControllerMock.on exactly (same reads, same rounding).
         uint256 debt = borrowerShares.toAssetsUp(tBA, tBS);

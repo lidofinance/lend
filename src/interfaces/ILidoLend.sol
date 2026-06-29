@@ -30,26 +30,27 @@ interface ILidoLendBase is IMorphoBase {
     /// @param enableSettlement Whether `settle` is enabled for this market.
     function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) external;
 
-    /// @notice Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
-    /// @dev Fork-added single-borrower primitive, enabled per market at creation. One of `supplyAssets` or
-    /// `supplyShares` must be zero, and the loan-asset value of the burned supply position is the borrower debt
-    /// canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of
-    /// `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The
-    /// bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert.
-    /// Reverts while another action's controller hook is executing.
+    /// @notice Cancels `borrower`'s debt against `onBehalf`'s supply, seizing collateral to `receiver`.
+    /// @dev Fork-added single-borrower primitive, enabled per market at creation. The caller specifies the
+    /// `borrower` debt to cancel (the BORROW side): one of `borrowAssets` or `borrowShares` must be zero. Settling
+    /// by shares burns exactly that many borrow shares — pass the borrower's full `borrowShares` to close the
+    /// position with no rounding overshoot — while settling by assets cancels that par debt. The cancellation is
+    /// funded at par (no incentive) from `onBehalf`'s supply, capped at the part of it that ordinary withdraw
+    /// liquidity cannot serve (its value minus free liquidity). Callable only by `onBehalf` or an address authorized
+    /// by `onBehalf`. The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap,
+    /// and may revert. Reverts while another action's controller hook is executing.
     /// @param marketParams The market to settle on.
-    /// @param supplyAssets The loan-asset value of `onBehalf`'s supply position to settle (and debt to cancel).
-    /// @param supplyShares The amount of supply shares to burn from `onBehalf`.
-    /// @param onBehalf The address whose supply shares are burned.
+    /// @param borrowAssets The borrow-asset (loan-token) value of `borrower` debt to cancel.
+    /// @param borrowShares The borrow-share count of `borrower` debt to burn.
+    /// @param onBehalf The address whose supply funds the par cancellation.
     /// @param borrower The borrower whose debt is canceled and collateral seized.
     /// @param receiver The address that receives the seized collateral.
     /// @return seizedAssets The collateral-token amount seized and sent to `receiver`.
-    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled (equals the settled supply value at par,
-    /// not a `borrowShares` count).
+    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled at par.
     function settle(
         MarketParams memory marketParams,
-        uint256 supplyAssets,
-        uint256 supplyShares,
+        uint256 borrowAssets,
+        uint256 borrowShares,
         address onBehalf,
         address borrower,
         address receiver
