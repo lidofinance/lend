@@ -466,8 +466,11 @@ contract LidoLend is ILidoLendStaticTyping {
 
         _accrueInterest(marketParams, id);
 
-        if (supplyAssets > 0) supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        else supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        if (supplyAssets > 0) {
+            supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        } else {
+            supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        }
 
         // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
         borrowAssetsCanceled = supplyAssets;
@@ -483,7 +486,8 @@ contract LidoLend is ILidoLendStaticTyping {
         require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
         require(seizedAssets <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
-        uint256 borrowSharesToBurn = borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        uint256 borrowSharesToBurn =
+            borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         // require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
 
         _hook(

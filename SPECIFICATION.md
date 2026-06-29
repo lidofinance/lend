@@ -95,16 +95,16 @@ The core derives the amounts in order, every rounding either against the exiting
 | `collateralSeized` | `debtCanceled × ORACLE_PRICE_SCALE / oraclePrice` | down, in the borrower's favor |
 | `borrowSharesToBurn` | `debtCanceled.toSharesUp`, over the borrow totals | up, in the protocol's favor |
 
-`oraclePrice` is the market oracle's `price()` per upstream `IOracle` — collateral quoted in loan token, scaled by `ORACLE_PRICE_SCALE = 1e36` with token decimals folded in, and it is the same price that feeds health checks and liquidation. The market's total supply and borrow assets are then reduced by `debtCanceled` with a zero floor.
+`oraclePrice` is the market oracle's `price()` per upstream `IOracle` — collateral quoted in loan token, scaled by `ORACLE_PRICE_SCALE = 1e36` with token decimals folded in, and it is the same price that feeds health checks and liquidation. The market's total supply and borrow assets are then each reduced by `debtCanceled` with a checked subtraction. The settleable-supply gate (below) bounds `debtCanceled` to at most `onBehalf`'s supply value — never more than either market total — so both subtractions are exact and cannot underflow.
 
 Net effect of a settle of `X` in loan value at oracle price `P`. No loan tokens move. The lender's claim and the borrower's debt cancel at par, and the borrower's collateral pays the receiver:
 
 | Balance | Change |
 | --- | --- |
 | `onBehalf` supply shares | burned, worth `X` |
-| `totalSupplyAssets` | − `X` (zero-floored) |
+| `totalSupplyAssets` | − `X` |
 | `borrower` borrow shares | burned, worth `X` |
-| `totalBorrowAssets` | − `X` (zero-floored) |
+| `totalBorrowAssets` | − `X` |
 | `borrower` collateral | − `X / P` |
 | `receiver` | + `X / P` collateral |
 

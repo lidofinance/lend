@@ -106,9 +106,15 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(settleableSupply, 70e18, "settleable supply");
 
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE));
-        _lido().settle(
-            marketParams, 0, (settleableSupply + 1) * SharesMathLib.VIRTUAL_SHARES, address(this), BORROWER, RECEIVER
-        );
+        _lido()
+            .settle(
+                marketParams,
+                0,
+                (settleableSupply + 1) * SharesMathLib.VIRTUAL_SHARES,
+                address(this),
+                BORROWER,
+                RECEIVER
+            );
 
         uint256 lenderSharesBefore = morpho.supplyShares(id, address(this));
         uint256 sliceShares = settleableSupply * SharesMathLib.VIRTUAL_SHARES;
@@ -193,7 +199,11 @@ contract SettleMathTest is BaseTestWithController {
         vars.totalBorrowAssets = morpho.totalBorrowAssets(id);
         vars.totalBorrowShares = morpho.totalBorrowShares(id);
 
-        assertEq(vars.sliceShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares), vars.debtCanceled, "slice maps to debtCanceled");
+        assertEq(
+            vars.sliceShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares),
+            vars.debtCanceled,
+            "slice maps to debtCanceled"
+        );
 
         vars.collateralSeized = _seizedFor(vars.debtCanceled);
         vars.borrowSharesToBurn = vars.debtCanceled.toSharesUp(vars.totalBorrowAssets, vars.totalBorrowShares);
@@ -329,8 +339,14 @@ contract SettleMathTest is BaseTestWithController {
         // than BORROWER holds (rounding direction is irrelevant — the overshoot is ~500k shares).
         emit log_string("attempting to close BORROWER by settling fullDebt");
         emit log_named_uint("  settle amount (wei)", fullDebt);
-        emit log_named_uint("  toSharesUp(fullDebt)  -> shares to burn", fullDebt.toSharesUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId)));
-        emit log_named_uint("  toSharesDown(fullDebt)-> shares to burn", fullDebt.toSharesDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId)));
+        emit log_named_uint(
+            "  toSharesUp(fullDebt)  -> shares to burn",
+            fullDebt.toSharesUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
+        emit log_named_uint(
+            "  toSharesDown(fullDebt)-> shares to burn",
+            fullDebt.toSharesDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
         emit log_named_uint("  BORROWER actually holds", morpho.borrowShares(marketId, BORROWER));
 
         // BUG: the cap burns toSharesUp(3) = 2.5e6 > 2e6 and reverts; capping the burn would close it.
@@ -338,16 +354,22 @@ contract SettleMathTest is BaseTestWithController {
         // _lido().settle(params, fullDebt, 0, address(this), BORROWER, RECEIVER);
         emit log_named_uint("supplier shares", morpho.supplyShares(marketId, address(this)));
         _lido().settle(params, fullDebt, 0, address(this), BORROWER, RECEIVER);
-        emit log_named_uint("borrower balance", morpho.borrowShares(marketId, BORROWER)
-            .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId)));
+        emit log_named_uint(
+            "borrower balance",
+            morpho.borrowShares(marketId, BORROWER)
+                .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
 
         emit log_string("1");
 
         vm.startPrank(BORROWER);
         _lido().repay(params, 1, 0, BORROWER, hex"");
 
-        emit log_named_uint("borrower balance", morpho.borrowShares(marketId, BORROWER)
-            .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId)));
+        emit log_named_uint(
+            "borrower balance",
+            morpho.borrowShares(marketId, BORROWER)
+                .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+        );
 
         emit log_string("2");
 
@@ -364,15 +386,19 @@ contract SettleMathTest is BaseTestWithController {
         vars.totalSupplyShares = morpho.totalSupplyShares(marketId);
         vars.totalBorrowAssets = morpho.totalBorrowAssets(marketId);
         vars.totalBorrowShares = morpho.totalBorrowShares(marketId);
-        vars.lenderShares = morpho.supplyShares(marketId,address(this));
+        vars.lenderShares = morpho.supplyShares(marketId, address(this));
         vars.sliceShares = bound(sliceSeed, 1, vars.lenderShares);
-        vm.assume(vars.sliceShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares) > 0); // skip zero-debt slices
+        vm.assume(vars.sliceShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares) > 0); // skip zero-debt
+        // slices
 
-        vars.borrowSharesBefore = morpho.borrowShares(marketId,BORROWER);
-        (vars.actualSeized, vars.actualCanceled) = _lido().settle(params, 0, vars.sliceShares, address(this), BORROWER, RECEIVER);
-        uint256 borrowSharesBurned = vars.borrowSharesBefore - morpho.borrowShares(marketId,BORROWER);
+        vars.borrowSharesBefore = morpho.borrowShares(marketId, BORROWER);
+        (vars.actualSeized, vars.actualCanceled) =
+            _lido().settle(params, 0, vars.sliceShares, address(this), BORROWER, RECEIVER);
+        uint256 borrowSharesBurned = vars.borrowSharesBefore - morpho.borrowShares(marketId, BORROWER);
 
-        assertEq(morpho.supplyShares(marketId,address(this)), vars.lenderShares - vars.sliceShares, "supply burned == input");
+        assertEq(
+            morpho.supplyShares(marketId, address(this)), vars.lenderShares - vars.sliceShares, "supply burned == input"
+        );
         assertEq(
             borrowSharesBurned.toAssetsDown(vars.totalBorrowAssets, vars.totalBorrowShares),
             vars.actualCanceled,
@@ -381,9 +407,13 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(vars.actualSeized, vars.actualCanceled, "seized == cancelled at 1:1");
 
         assertEq(morpho.totalSupplyShares(marketId), vars.totalSupplyShares - vars.sliceShares, "total supply shares");
-        assertEq(morpho.totalSupplyAssets(marketId), vars.totalSupplyAssets - vars.actualCanceled, "total supply assets");
+        assertEq(
+            morpho.totalSupplyAssets(marketId), vars.totalSupplyAssets - vars.actualCanceled, "total supply assets"
+        );
         assertEq(morpho.totalBorrowShares(marketId), vars.totalBorrowShares - borrowSharesBurned, "total borrow shares");
-        assertEq(morpho.totalBorrowAssets(marketId), vars.totalBorrowAssets - vars.actualCanceled, "total borrow assets");
+        assertEq(
+            morpho.totalBorrowAssets(marketId), vars.totalBorrowAssets - vars.actualCanceled, "total borrow assets"
+        );
         assertEq(collateralToken.balanceOf(RECEIVER), vars.actualSeized, "receiver collateral");
     }
 
@@ -395,12 +425,13 @@ contract SettleMathTest is BaseTestWithController {
         Vars memory vars;
         vars.totalSupplyAssets = morpho.totalSupplyAssets(marketId);
         vars.totalSupplyShares = morpho.totalSupplyShares(marketId);
-        vars.lenderShares = morpho.supplyShares(marketId,address(this));
-        vars.debtCanceled = bound(assetsSeed, 1, vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares));
+        vars.lenderShares = morpho.supplyShares(marketId, address(this));
+        vars.debtCanceled =
+            bound(assetsSeed, 1, vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares));
         vm.assume(vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares) <= vars.lenderShares);
 
         (, vars.actualCanceled) = _lido().settle(params, vars.debtCanceled, 0, address(this), BORROWER, RECEIVER);
-        uint256 supplySharesBurned = vars.lenderShares - morpho.supplyShares(marketId,address(this));
+        uint256 supplySharesBurned = vars.lenderShares - morpho.supplyShares(marketId, address(this));
 
         assertEq(vars.actualCanceled, vars.debtCanceled, "assets input == cancelled debt");
         assertEq(

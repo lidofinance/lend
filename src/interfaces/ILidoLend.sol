@@ -44,8 +44,8 @@ interface ILidoLendBase is IMorphoBase {
     /// @param borrower The borrower whose debt is canceled and collateral seized.
     /// @param receiver The address that receives the seized collateral.
     /// @return seizedAssets The collateral-token amount seized and sent to `receiver`.
-    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled (equals the settled supply value at par,
-    /// not a `borrowShares` count).
+    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled (equals the settled supply value
+    /// at par, not a `borrowShares` count).
     function settle(
         MarketParams memory marketParams,
         uint256 supplyAssets,

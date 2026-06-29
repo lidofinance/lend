@@ -139,11 +139,7 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         // Authorize address(this) to act for `authorizer` via an EIP-712 signature.
         Authorization memory authorization = Authorization({
-            authorizer: authorizer,
-            authorized: address(this),
-            isAuthorized: true,
-            nonce: 0,
-            deadline: block.timestamp
+            authorizer: authorizer, authorized: address(this), isAuthorized: true, nonce: 0, deadline: block.timestamp
         });
         Signature memory sig;
         (sig.v, sig.r, sig.s) = vm.sign(privateKey, SigUtils.getTypedDataHash(morpho.DOMAIN_SEPARATOR(), authorization));
@@ -182,8 +178,7 @@ contract SettleIntegrationTest is BaseTestWithController {
     function testSettleHookPayload() public {
         _openPosition(100e18, 100e18, 70e18);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
-        uint256 expectedCanceled =
-            supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 expectedCanceled = supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
         uint256 expectedSeized = _seizedFor(expectedCanceled);
         uint256 expectedCanceledShares =
             expectedCanceled.toSharesUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
@@ -210,15 +205,21 @@ contract SettleIntegrationTest is BaseTestWithController {
     function testSettleEmitsEvent() public {
         _openPosition(100e18, 100e18, 70e18);
         uint256 supplyShares = morpho.supplyShares(id, address(this)) / 2;
-        uint256 expectedCanceled =
-            supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 expectedCanceled = supplyShares.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
         uint256 expectedSeized = _seizedFor(expectedCanceled);
         uint256 expectedCanceledShares =
             expectedCanceled.toSharesUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
 
         vm.expectEmit(true, true, true, true, address(morpho));
         emit EventsLib.Settle(
-            id, address(this), address(this), BORROWER, supplyShares, expectedCanceled, expectedCanceledShares, expectedSeized
+            id,
+            address(this),
+            address(this),
+            BORROWER,
+            supplyShares,
+            expectedCanceled,
+            expectedCanceledShares,
+            expectedSeized
         );
         _lido().settle(marketParams, 0, supplyShares, address(this), BORROWER, RECEIVER);
     }
