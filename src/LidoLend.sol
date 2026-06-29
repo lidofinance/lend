@@ -469,15 +469,15 @@ contract LidoLend is ILidoLendStaticTyping {
         uint256 borrowSharesToBurn;
         if (supplyShares > 0) {
             // Supply-anchored: burn `onBehalf`'s exact supply shares, derive the rest. `toAssetsDown` cancels
-            // a hair LESS debt than that supply is worth (`onBehalf` eats the wei); `toSharesUp` burns a hair
+            // a hair LESS debt than that supply is worth (`onBehalf` eats the wei). `toSharesUp` burns a hair
             // MORE borrow shares than par (remaining borrowers owe the wei).
             borrowAssetsCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
             borrowSharesToBurn =
                 borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         } else {
             // Borrow-anchored: burn the borrower's exact debt shares, derive the rest (whole holding closes
-            // to zero). `toAssetsUp` cancels a hair MORE debt than par (this borrower's collateral covers it;
-            // others owe one wei less); `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
+            // to zero). `toAssetsUp` cancels a hair MORE debt than par (this borrower's collateral covers it, and
+            // others owe one wei less). `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
             borrowSharesToBurn = borrowShares;
             borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
             supplyShares = borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
@@ -485,7 +485,7 @@ contract LidoLend is ILidoLendStaticTyping {
 
         require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
 
-        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity; the
+        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity. The
         // liquid part must be redeemed normally rather than settled.
         require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
 
