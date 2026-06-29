@@ -505,11 +505,11 @@ contract LidoLend is ILidoLendStaticTyping {
 
         position[id][onBehalf].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, borrowAssetsCanceled).toUint128();
+        market[id].totalSupplyAssets = (market[id].totalSupplyAssets - borrowAssetsCanceled).toUint128();
 
         position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
         market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, borrowAssetsCanceled).toUint128();
+        market[id].totalBorrowAssets = (market[id].totalBorrowAssets - borrowAssetsCanceled).toUint128();
 
         position[id][borrower].collateral -= seizedAssets.toUint128();
 
