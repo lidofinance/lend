@@ -451,8 +451,8 @@ contract LidoLend is ILidoLendStaticTyping {
     /// @inheritdoc ILidoLendBase
     function settle(
         MarketParams memory marketParams,
-        uint256 supplyAssets,
         uint256 supplyShares,
+        uint256 borrowShares,
         address onBehalf,
         address borrower,
         address receiver
@@ -460,35 +460,39 @@ contract LidoLend is ILidoLendStaticTyping {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
-        require(UtilsLib.exactlyOneZero(supplyAssets, supplyShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(UtilsLib.exactlyOneZero(supplyShares, borrowShares), ErrorsLib.INCONSISTENT_INPUT);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
         require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
-        if (supplyAssets > 0) {
-            supplyShares = supplyAssets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        uint256 borrowSharesToBurn;
+        if (supplyShares > 0) {
+            // Supply-anchored: burn `onBehalf`'s exact supply shares, derive the rest. `toAssetsDown` cancels
+            // a hair LESS debt than that supply is worth (`onBehalf` eats the wei). `toSharesUp` burns a hair
+            // MORE borrow shares than par (remaining borrowers owe the wei).
+            borrowAssetsCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+            borrowSharesToBurn =
+                borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         } else {
-            supplyAssets = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+            // Borrow-anchored: burn the borrower's exact debt shares, derive the rest (whole holding closes
+            // to zero). `toAssetsUp` cancels a hair MORE debt than par (this borrower's collateral covers it, and
+            // others owe one wei less). `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
+            borrowSharesToBurn = borrowShares;
+            borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+            supplyShares = borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         }
 
-        // The settled supply value cancels an equal amount of borrower debt (par, no incentive).
-        borrowAssetsCanceled = supplyAssets;
-        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity; the
+        require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+
+        // Settle may only cover onBehalf's own supply beyond the freely-withdrawable liquidity. The
         // liquid part must be redeemed normally rather than settled.
         require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_LIQUIDITY_AVAILABLE);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        uint256 borrowerRawCollateral = position[id][borrower].collateral;
-        require(position[id][borrower].borrowShares != 0, ErrorsLib.SETTLEMENT_NO_DEBT);
-
         seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
         require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
-        require(seizedAssets <= borrowerRawCollateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
-
-        uint256 borrowSharesToBurn =
-            borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        // require(borrowSharesToBurn <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+        require(seizedAssets <= position[id][borrower].collateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
         _hook(
             id,
@@ -509,11 +513,11 @@ contract LidoLend is ILidoLendStaticTyping {
 
         position[id][onBehalf].supplyShares -= supplyShares;
         market[id].totalSupplyShares -= supplyShares.toUint128();
-        market[id].totalSupplyAssets = (market[id].totalSupplyAssets - borrowAssetsCanceled).toUint128();
+        market[id].totalSupplyAssets -= borrowAssetsCanceled.toUint128();
 
         position[id][borrower].borrowShares -= borrowSharesToBurn.toUint128();
         market[id].totalBorrowShares -= borrowSharesToBurn.toUint128();
-        market[id].totalBorrowAssets = (market[id].totalBorrowAssets - borrowAssetsCanceled).toUint128();
+        market[id].totalBorrowAssets -= borrowAssetsCanceled.toUint128();
 
         position[id][borrower].collateral -= seizedAssets.toUint128();
 

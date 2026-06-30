@@ -69,7 +69,7 @@ sequenceDiagram
 
 The tail of the diagram is schematic. The exact order of token transfers and the Morpho callback is per-action and unchanged from upstream — `liquidate`, for one, sends the seized collateral before its callback and pulls the loan repayment after.
 
-Two properties keep this safe. The hook fires after interest accrual and after the amounts are fully resolved, but before any state change or transfer, so the controller sees final numbers it cannot then alter. And a transient lock is held for the length of `on`, so while a hook runs any hooked action on a controlled market reverts with `hook reentrancy`. The lock lives in the dispatch, so a market with no controller is never gated, and `flashLoan` and the authorization calls stay reachable from inside a hook because they touch no market accounting.
+Two properties keep this safe. The hook fires after interest accrual and after the amounts are fully resolved, but before any state change or transfer, so the controller sees final numbers it cannot then alter. And a single transient lock is held for the length of `on`, so while a hook runs, re-entering any action reverts with `hook reentrancy`. The check sits in the dispatch that every action calls, so this also blocks an action on a different market or one with no controller. The lock guards only the hooked actions, so from inside a hook a controller can still reach `flashLoan` and the authorization calls, which dispatch no hook.
 
 A few actions deviate from that timing:
 
@@ -84,33 +84,68 @@ The hook is not the last gate. The inherited post-mutation checks (withdraw and 
 
 ## Settlement
 
-`settle` lets a lender exit through a borrower's position when ordinary liquidity is exhausted: the lender burns supply shares (given as either a loan-asset amount `supplyAssets` or a share amount `supplyShares`, exactly one non-zero, like `withdraw`), canceling an equal value of borrower debt, and the borrower's collateral moves to the receiver at the oracle price — no liquidation incentive (`LIF = 1`).
+`settle` lets a lender exit through a borrower's position when ordinary liquidity is exhausted. The lender cancels borrower debt against its own supply shares, and the borrower's collateral moves to the receiver at the oracle price — no liquidation incentive (`LIF = 1`). The amount is given through exactly one of two anchors. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, so passing the borrower's whole `borrowShares` closes the position to zero, with the supply burn derived to match.
 
-The core derives the amounts in order, every rounding either against the exiting lender or in the protocol's favor (as in `withdraw`):
+The core derives the rest in order. `oraclePrice` is the market oracle's `price()` per upstream `IOracle` — collateral quoted in loan token, scaled by `ORACLE_PRICE_SCALE = 1e36` with token decimals folded in, the same price that feeds health checks and liquidation.
 
-| Quantity | Computed as | Rounds |
-| --- | --- | --- |
-| the input left at zero | `supplyAssets.toSharesUp` (asset input) or `supplyShares.toAssetsDown` (share input), over the supply totals | against the lender |
-| `debtCanceled` | `supplyAssets`, the loan-asset value of the burned supply | — |
-| `collateralSeized` | `debtCanceled × ORACLE_PRICE_SCALE / oraclePrice` | down, in the borrower's favor |
-| `borrowSharesToBurn` | `debtCanceled.toSharesUp`, over the borrow totals | up, in the protocol's favor |
+A settle of `X` loan value (`X = debtCanceled`) cancels `X` of the lender's supply claim against `X` of the borrower's debt — **no loan tokens move** — and transfers `X / oraclePrice` of the borrower's collateral to the receiver. The two asset totals each fall by `X`, so the market's free liquidity is invariant and `totalSupplyAssets ≥ totalBorrowAssets` is preserved (plain checked subtraction, no zero floor — see *No underflow, no `zeroFloorSub`* below).
 
-`oraclePrice` is the market oracle's `price()` per upstream `IOracle` — collateral quoted in loan token, scaled by `ORACLE_PRICE_SCALE = 1e36` with token decimals folded in, and it is the same price that feeds health checks and liquidation. The market's total supply and borrow assets are then each reduced by `debtCanceled` with a checked subtraction. The settleable-supply gate (below) bounds `debtCanceled` to at most `onBehalf`'s supply value — never more than either market total — so both subtractions are exact and cannot underflow.
+Three conversions round, each against the caller. Because both totals drop by the same `debtCanceled`, every rounding is a ≤1-wei redistribution, never a protocol loss — but which party absorbs it differs by anchor and by step. The input anchor is exact, and the rest is derived.
 
-Net effect of a settle of `X` in loan value at oracle price `P`. No loan tokens move. The lender's claim and the borrower's debt cancel at par, and the borrower's collateral pays the receiver:
+**Supply-anchored** (`supplyShares` is the exact input):
 
-| Balance | Change |
-| --- | --- |
-| `onBehalf` supply shares | burned, worth `X` |
-| `totalSupplyAssets` | − `X` |
-| `borrower` borrow shares | burned, worth `X` |
-| `totalBorrowAssets` | − `X` |
-| `borrower` collateral | − `X / P` |
-| `receiver` | + `X / P` collateral |
+1. `borrowAssetsCanceled = supplyShares.toAssetsDown` — rounds **down**.
+   - The `N` burned supply shares are worth ~`V`. The debt canceled is `floor(V) ≤ V` — the lender burns supply worth `V` but cancels (and seizes against) only `floor(V)`.
+   - **Loses:** the settling lender — the dropped fraction.
+   - **Gains:** the other lenders — `totalSupplyAssets` fell by `floor(V)`, not `V`, lifting their per-share backing.
+   - **If rounded up:** the lender could cancel more debt than its burned supply is worth — extraction.
+2. `borrowSharesToBurn = borrowAssetsCanceled.toSharesUp` — rounds **up**.
+   - For `A = debtCanceled` it burns `ceil` of the borrower's debt shares. `totalBorrowAssets` drops by `A` (fixed), `totalBorrowShares` by `ceil`, so the borrow index ticks up.
+   - **Loses:** the other borrowers — they now owe a hair more.
+   - **Gains:** the settled borrower — sheds a hair more shares for the same `A`.
+   - **If rounded down:** too few shares burned, the index deflates, and debt is silently forgiven.
+3. `seizedAssets = borrowAssetsCanceled.mulDivDown(...)` — rounds **down**.
+   - The collateral worth `A` at the oracle price is floored.
+   - **Loses:** the settling lender (via `receiver`) — ≤1 unit less collateral.
+   - **Gains:** the borrower — keeps the fraction.
+   - **If rounded up:** more collateral seized than the debt is worth — over-seizure.
 
-The routine guards are listed with the function in the reference: the market exists and has settlement enabled, exactly one amount is non-zero, the caller is authorized for `onBehalf`, the borrower has debt, and the cut fits within the borrower's collateral and debt. One gate is specific to settle. After accrual, `debtCanceled` must not exceed `onBehalf`'s settleable supply — its own supply value minus the market's free liquidity (`totalSupplyAssets − totalBorrowAssets`), floored at zero. A lender may therefore settle only the portion of its own supply that an ordinary withdraw cannot serve, and the free-liquidity portion must be withdrawn instead. That bound is an accounting quantity rather than a token balance, so flash loans and donations cannot open it. Because it never exceeds `onBehalf`'s own supply, the gate also rejects burning more shares than `onBehalf` owns — cleanly, before the share subtraction, so there is no unguarded arithmetic-panic precondition.
+**Borrow-anchored** (`borrowShares` is the exact input — the whole holding closes the position to zero):
 
-Illustrative numbers: at an oracle price of `3e36` (one collateral unit is worth three loan units), a lender burns shares worth `debtCanceled = 100` loan units (the share conversion already rounded this down). Collateral seized: `100 × 1e36 / 3e36 = 33` — the fractional `.33` stays with the borrower. Borrow shares burned: shares worth `100`, rounded up, so the borrower's debt falls by at least `100` — the rounding dust favors the protocol.
+1. `borrowAssetsCanceled = borrowShares.toAssetsUp` — rounds **up**.
+   - The borrower's shares are worth ~`V`. The debt canceled is `ceil(V) ≥ V`. `totalBorrowAssets` drops by `ceil` (a hair more than `V`), `totalBorrowShares` by the exact input, so the borrow index ticks down.
+   - **Gains:** the other borrowers — they now owe a hair less.
+   - **Paid by:** the closed borrower — the seize (step 3) runs on `ceil`, so a hair more of its collateral leaves than its fair debt warrants.
+   - **If rounded down:** less leaves `totalBorrowAssets` than the burned shares are worth, leaving a wei of debt unfunded.
+2. `supplyShares = borrowAssetsCanceled.toSharesUp` — rounds **up**.
+   - For `A` it burns `ceil` of `onBehalf`'s supply shares. `totalSupplyAssets` drops by `A` (fixed), `totalSupplyShares` by `ceil`, so the supply index ticks up.
+   - **Loses:** the settling lender — burns a hair more supply than it gets back.
+   - **Gains:** the other lenders.
+   - **If rounded down:** the lender keeps an over-valued residual — extraction from co-lenders.
+3. `seizedAssets = borrowAssetsCanceled.mulDivDown(...)` — rounds **down** (same code as supply-anchored step 3).
+   - **Loses:** the settling lender (via `receiver`).
+   - **Gains:** the borrower — keeps the fraction.
+
+**In one line:** the initiator (`onBehalf` / `receiver`) always eats its own supply-side and seize dust. The third, borrow-side wei lands on the borrowers — under a supply-anchored cut the others owe a hair more, under a borrow-anchored cut they owe a hair less and the closed borrower pays. The protocol loses nowhere.
+
+One gate is specific to settle: after accrual, `debtCanceled` may not exceed `onBehalf`'s **settleable supply** — its own supply value minus the market's free liquidity (`totalSupplyAssets − totalBorrowAssets`, floored at zero). A lender may therefore settle only the portion of its supply that an ordinary withdraw cannot serve. The free-liquidity portion must be withdrawn instead. The bound is an accounting quantity, not a token balance, so flash loans and donations cannot open it.
+
+The settle-specific gates fire in this order, after accrual and amount resolution. Each is a distinct revert string:
+
+1. `settlement exceeds debt` — the resolved `borrowSharesToBurn` exceeds the borrower's `borrowShares` (a supply-anchored cut worth more than the debt, or a borrower with no debt at all).
+2. `ordinary liquidity available` — `debtCanceled` exceeds the settleable cap above. This is also where a sole-borrower full closure (below) reverts.
+3. `settlement slice too small` — `seizedAssets` rounds to zero: at an extreme oracle price the cut is too small to seize even one collateral unit, which would cancel debt for no collateral, so it is blocked.
+4. `settlement exceeds collateral` — `seizedAssets` exceeds the borrower's collateral.
+
+The routine market-existence / `settlement disabled` / `inconsistent input` / `zero address` (receiver) / `unauthorized` checks run first, and the controller's `Settle` hook can revert on top of all of these.
+
+**No underflow, no `zeroFloorSub`.** The settleable cap bounds the cut from above: `debtCanceled ≤ settleableSupply ≤ min(totalSupplyAssets, totalBorrowAssets)`. `settleableSupply` is `onBehalf`'s supply valued down minus free liquidity, so it never exceeds `totalSupplyAssets`. Because free liquidity is `totalSupplyAssets − totalBorrowAssets` (floored at zero), subtracting it leaves at most `totalBorrowAssets`. Both asset totals are therefore `≥ debtCanceled` before the write, so `totalSupplyAssets -= debtCanceled` and `totalBorrowAssets -= debtCanceled` cannot underflow. The writes use plain checked subtraction rather than `zeroFloorSub`: the cap already makes the floor redundant, and the checked form reverts loudly if a future change ever broke that bound instead of silently clamping a total to zero. The share legs are bounded the same way — `borrowSharesToBurn ≤ borrower.borrowShares` (the debt gate), and the burned supply shares never exceed `onBehalf`'s own holding.
+
+**Worked examples (drifted 1:1 market).** Interest has drifted a 1:1 market so both totals read 13 against 12e6 shares (a lender supplied 12, borrowers drew 7 and 5).
+
+- *Borrow-anchored close of the 7e6-share borrower.* Its fair value is `7e6 × 13 / 12e6 ≈ 7.58`, but `toAssetsUp` cancels `debtCanceled = 8`. The supply burn is `toSharesUp(8) = 7,428,572` and the seize at 1:1 is 8 collateral. The lender ends even (−8 of supply claim, +8 collateral), while the *other* borrower's debt drifts `6 → 5` — the one-wei relief of borrow-anchored step 1. Both totals fall `13 → 5`, still solvent.
+- *Sole borrower over the whole pool — the one closure the rounding forbids.* A lender supplies 12, a sole borrower draws the whole 12, interest drifts `totalBorrowAssets` to 13. Closing the whole debt needs `debtCanceled = toAssetsUp(12e6) = 13`, but the settleable cap is `toAssetsDown(12e6 supply) = 12` (free liquidity 0), so the cut reverts `ordinary liquidity available`. That gap is the one-wei virtual-share buffer — the debt valued up exceeds the supply valued down by a wei no input can back — and the same cap is why the total never underflows (it stops at `12 ≤ totalBorrowAssets`). The lender exits through `supplyShares` instead, cancels 12, and the unbacked wei stays on the borrower.
+- *Seize at a non-1:1 price.* At `oraclePrice = 3e36` (one collateral unit worth three loan units), a cut of `debtCanceled = 100` seizes `100 × 1e36 / 3e36 = 33` collateral — the fractional `.33` stays with the borrower (`mulDivDown`).
 
 The core performs **no health check on the borrower**. `settle` is soft liquidation and must reach unhealthy-but-solvent positions (`LLTV < LTV < 100%`) — a health gate would block exactly the positions it exists for. Two consequences: absent controller policy, even a healthy borrower can be cut — borrower selection and cut sizing are entirely the controller's responsibility — and bad-debt positions (`LTV > 100%`) must be excluded by the controller, not the core.
 
@@ -121,7 +156,7 @@ A cut removes equal value `X` from both sides, so LTV `D/C` moves to `(D−X)/(C
 | solvent (`D < C`) | 80 / 100 = 0.80 | 40 | 40 / 60 = 0.67 ↓ |
 | insolvent (`D > C`) | 120 / 100 = 1.20 | 50 | 70 / 50 = 1.40 ↑ |
 
-So a cut heals a solvent position (par, no penalty — milder than liquidation, and the borrower's only cost is the forced shrinkage of a position it chose to hold), but a cut on a bad-debt position concentrates the shortfall on the remaining collateral. Excluding `LTV > 100%` borrowers is therefore a load-bearing controller duty, not a convention.
+So a cut heals a solvent position (par, no penalty — milder than liquidation), but a cut on a bad-debt position concentrates the shortfall on the remaining collateral. Excluding `LTV > 100%` borrowers is therefore a load-bearing controller duty, not a convention.
 
 `settle` never realizes bad debt: unlike `liquidate`, a cut that empties the collateral leaves residual borrow shares in place, to be socialized only by a subsequent liquidation. Liquidation remains the path for ordinary unhealthy positions, and settlement does not replace it.
 
@@ -141,7 +176,7 @@ Storage layout is append-only — under a proxy this is load-bearing:
 | 10 | `isSettlementEnabled` | fork |
 | 11 | `isInitialized` | fork |
 
-The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) requires the Cancun EVM and Solidity 0.8.35 — the fork's deployment floor, above upstream's 0.8.19, so target chains must support it. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib` under `FORK-ADDED` sections.
+The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) needs an EVM at Cancun or later. The fork builds with `evm_version = "cancun"` and Solidity 0.8.35 (above upstream's 0.8.19), so the target chain must support Cancun. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib` under `FORK-ADDED` sections.
 
 ## Trust Assumptions
 
@@ -707,12 +742,12 @@ Withdrawing an amount corresponding to more collateral than supplied will revert
 ```solidity
 function settle(
     MarketParams memory marketParams,
-    uint256 supplyAssets,
     uint256 supplyShares,
+    uint256 borrowShares,
     address onBehalf,
     address borrower,
     address receiver
-) external returns (uint256 collateralSeized, uint256 debtCanceled);
+) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled);
 ```
 
 **Parameters**
@@ -720,8 +755,8 @@ function settle(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketParams` | `MarketParams` | The market to settle on. |
-| `supplyAssets` | `uint256` | The loan-asset value of `onBehalf`'s supply position to settle (and debt to cancel). |
-| `supplyShares` | `uint256` | The amount of supply shares to burn from `onBehalf`. |
+| `supplyShares` | `uint256` | The amount of `onBehalf`'s supply shares to burn (supply-anchored settle, or zero). |
+| `borrowShares` | `uint256` | The exact count of `borrower`'s debt shares to cancel (borrow-anchored settle, or zero). Pass the borrower's whole `borrowShares` to close the position to zero. |
 | `onBehalf` | `address` | The address whose supply shares are burned. |
 | `borrower` | `address` | The borrower whose debt is canceled and collateral seized. |
 | `receiver` | `address` | The address that receives the seized collateral. |
@@ -730,12 +765,15 @@ function settle(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `collateralSeized` | `uint256` | The collateral-token amount seized and sent to `receiver`. |
-| `debtCanceled` | `uint256` | The loan-token amount of `borrower` debt canceled (equals the settled supply value at par, not a `borrowShares` count). |
+| `seizedAssets` | `uint256` | The collateral-token amount seized and sent to `receiver`. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token amount of `borrower` debt canceled (the settled value at par). |
 
 Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
 
-Fork-added single-borrower primitive, enabled per market at creation. One of `supplyAssets` or `supplyShares` must be zero, and the loan-asset value of the burned supply position is the borrower debt canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller hook is executing.
+Fork-added single-borrower primitive, enabled per market at creation. Exactly one of `supplyShares` or `borrowShares` is non-zero. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels borrower debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, so passing the borrower's whole `borrowShares` closes the position to zero (when `onBehalf`'s settleable supply covers it), with the supply burn derived to match. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller hook is executing.
+
+> [!WARNING]
+> A sole borrower spanning the whole pool cannot be closed to zero through `borrowShares` when the lender holds no surplus. The debt valued up exceeds the lender's settleable supply (valued down) by the one-wei virtual-share buffer, so the cut reverts on the settleable cap. That wei is unbacked and no input can settle it. The lender still exits through `supplyShares`, which cancels everything its supply backs and leaves the wei.
 
 ##### `liquidate`
 
@@ -915,7 +953,7 @@ function _hook(Id id, HookEvent e, bytes memory data) internal;
 
 Single strict-callback dispatch into the controller. ABI-encoded payloads keep the core fork surface minimal, and the controller decodes per-event in its `on()` handler.
 
-Doubles as the reentrancy gate, scoped to where hooks exist: on a market with a controller, entering while another controller hook is in flight reverts. A market with no controller is never gated. Nested hooks are impossible: a controlled market reverts here before dispatching its own hook. The lock is released before the calling function writes state and runs Morpho callbacks.
+Doubles as the reentrancy gate: while any controller hook is in flight, re-entering any action reverts — including actions on markets with no controller. The lock is released before the calling function writes state and runs Morpho callbacks.
 
 ##### `_availableLiquidity`
 
@@ -1285,6 +1323,7 @@ struct LiquidateHookData {
     address caller;
     address borrower;
     uint256 seizedAssets;
+    uint256 repaidAssets;
     uint256 repaidShares;
 }
 ```
@@ -1298,6 +1337,7 @@ Payload for the `Liquidate` hook.
 | `caller` | `address` | The liquidator, and the address the seized collateral goes to. |
 | `borrower` | `address` | The position being liquidated. |
 | `seizedAssets` | `uint256` | The collateral-token amount seized, after resolution. |
+| `repaidAssets` | `uint256` | The loan-token debt repaid, after resolution. |
 | `repaidShares` | `uint256` | The borrow shares repaid, after resolution. |
 
 ##### `SettleHookData`
@@ -1308,8 +1348,10 @@ struct SettleHookData {
     address onBehalf;
     address borrower;
     address receiver;
-    uint256 debtCanceled;
-    uint256 collateralSeized;
+    uint256 supplySharesBurned;
+    uint256 borrowAssetsCanceled;
+    uint256 borrowSharesCanceled;
+    uint256 seizedAssets;
 }
 ```
 
@@ -1323,7 +1365,9 @@ Payload for the `Settle` hook.
 | `onBehalf` | `address` | The address whose supply shares are burned. |
 | `borrower` | `address` | The address whose debt is canceled and collateral seized. |
 | `receiver` | `address` | The address receiving the seized collateral. |
-| `debtCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
-| `collateralSeized` | `uint256` | The collateral-token amount seized, computed in core. |
+| `supplySharesBurned` | `uint256` | The supply shares burned from onBehalf, after resolution. |
+| `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
+| `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
+| `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. |
 
 <!-- END AUTOGENERATED API -->

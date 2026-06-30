@@ -31,25 +31,33 @@ interface ILidoLendBase is IMorphoBase {
     function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) external;
 
     /// @notice Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
-    /// @dev Fork-added single-borrower primitive, enabled per market at creation. One of `supplyAssets` or
-    /// `supplyShares` must be zero, and the loan-asset value of the burned supply position is the borrower debt
-    /// canceled. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of
-    /// `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The
-    /// bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert.
-    /// Reverts while another action's controller hook is executing.
+    /// @dev Fork-added single-borrower primitive, enabled per market at creation. Exactly one of `supplyShares`
+    /// or `borrowShares` is non-zero. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels
+    /// borrower debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt
+    /// shares, so passing the borrower's whole `borrowShares` closes the position to zero (when `onBehalf`'s
+    /// settleable supply covers it), with the supply burn derived to match. Callable only by `onBehalf` or an
+    /// address authorized by `onBehalf`, and capped at the part of `onBehalf`'s supply that ordinary withdraw
+    /// liquidity cannot serve (its value minus free liquidity). The bound controller's `Settle` hook enforces
+    /// borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller
+    /// hook is executing.
+    /// @dev Warning: A sole borrower spanning the whole pool cannot be closed to zero through `borrowShares`
+    /// when the lender holds no surplus. The debt valued up exceeds the lender's settleable supply (valued down)
+    /// by the one-wei virtual-share buffer, so the cut reverts on the settleable cap. That wei is unbacked and no
+    /// input can settle it. The lender still exits through `supplyShares`, which cancels everything its supply
+    /// backs and leaves the wei.
     /// @param marketParams The market to settle on.
-    /// @param supplyAssets The loan-asset value of `onBehalf`'s supply position to settle (and debt to cancel).
-    /// @param supplyShares The amount of supply shares to burn from `onBehalf`.
+    /// @param supplyShares The amount of `onBehalf`'s supply shares to burn (supply-anchored settle, or zero).
+    /// @param borrowShares The exact count of `borrower`'s debt shares to cancel (borrow-anchored settle, or
+    /// zero). Pass the borrower's whole `borrowShares` to close the position to zero.
     /// @param onBehalf The address whose supply shares are burned.
     /// @param borrower The borrower whose debt is canceled and collateral seized.
     /// @param receiver The address that receives the seized collateral.
     /// @return seizedAssets The collateral-token amount seized and sent to `receiver`.
-    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled (equals the settled supply value
-    /// at par, not a `borrowShares` count).
+    /// @return borrowAssetsCanceled The loan-token amount of `borrower` debt canceled (the settled value at par).
     function settle(
         MarketParams memory marketParams,
-        uint256 supplyAssets,
         uint256 supplyShares,
+        uint256 borrowShares,
         address onBehalf,
         address borrower,
         address receiver
