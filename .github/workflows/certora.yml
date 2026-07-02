@@ -1,6 +1,10 @@
 name: Certora
 
 on:
+  push:
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -35,9 +39,9 @@ jobs:
 
       - name: Install solc
         run: |
-          wget https://github.com/ethereum/solidity/releases/download/v0.8.19/solc-static-linux
+          wget https://github.com/ethereum/solidity/releases/download/v0.8.35/solc-static-linux
           chmod +x solc-static-linux
-          sudo mv solc-static-linux /usr/local/bin/solc-0.8.19
+          sudo mv solc-static-linux /usr/local/bin/solc-0.8.35
 
       - run: certoraRun certora/confs/${{ matrix.conf }}.conf
         env:
