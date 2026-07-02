@@ -231,7 +231,7 @@ rule settleInputValidation(env e, MorphoHarness.MarketParams marketParams, uint2
 
 // settle reverts when the targeted borrower has no debt — it is a soft liquidation and only acts on
 // indebted positions. No dedicated error backs this: with zero debt shares, any positive cut trips
-// SETTLEMENT_EXCEEDS_DEBT (borrowSharesToBurn rounds up to >= 1 > 0) and a zero cut trips
+// SETTLEMENT_EXCEEDS_DEBT (borrowSharesCanceled rounds up to >= 1 > 0) and a zero cut trips
 // SETTLEMENT_SLICE_TOO_SMALL (nothing to seize), in both anchor paths. borrowShares(borrower) is
 // untouched by interest accrual, so the pre-state read is the value the guards see; no other
 // assumption is needed.
@@ -324,19 +324,19 @@ rule settleCollateralCutRevertsBorrowAnchored(env e, MorphoHarness.MarketParams 
 }
 
 // settle reverts (SETTLEMENT_EXCEEDS_DEBT) when the shares burned for the cut exceed the borrower's debt.
-// Supply-anchored: borrowSharesToBurn = toSharesUp(toAssetsDown(supplyShares, supply totals), borrow totals).
+// Supply-anchored: borrowSharesCanceled = toSharesUp(toAssetsDown(supplyShares, supply totals), borrow totals).
 rule settleExceedsDebtRevertsSupplyAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
     require lastUpdate(id) == e.block.timestamp;
 
     uint256 debtCanceled = Util.libMulDivDown(supplyShares, virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
-    uint256 borrowSharesToBurn = Util.libMulDivUp(debtCanceled, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id));
+    uint256 borrowSharesCanceled = Util.libMulDivUp(debtCanceled, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id));
     // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
     uint256 borrowerDebt = borrowShares(id, borrower);
 
     settle@withrevert(e, marketParams, supplyShares, 0, onBehalf, borrower, receiver);
 
-    assert to_mathint(borrowSharesToBurn) > to_mathint(borrowerDebt) => lastReverted;
+    assert to_mathint(borrowSharesCanceled) > to_mathint(borrowerDebt) => lastReverted;
 }
 
 // Borrow-anchored: the burned shares are the input itself, so the guard is direct — no accrual
