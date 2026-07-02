@@ -242,7 +242,7 @@ rule settleNoDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256
     assert noDebt => lastReverted;
 }
 
-// settle reverts (SETTLEMENT_LIQUIDITY_AVAILABLE) when the cancelled debt exceeds onBehalf's settleable
+// settle reverts (SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY) when the cancelled debt exceeds onBehalf's settleable
 // supply: the part of onBehalf's supply that sits beyond the freely-withdrawable liquidity. The liquid
 // part must be redeemed with a normal withdraw, so settle is gated to debtCanceled <= _settleableSupply,
 // where _settleableSupply = max(0, onBehalfSupplyAssets - availableLiquidity),
