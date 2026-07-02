@@ -5,42 +5,37 @@ import {Id} from "../interfaces/IMorpho.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 /// @title ControllerMock
-/// @notice Permissive market controller for tests. Satisfies the core's binding check
-///         (`marketId`) and records every hook dispatch (event + payload) so tests can assert the
-///         core fired it with the right data. By default `on` never reverts, exercising the happy
-///         path without policy; `setRevertOn(event, true)` makes it block that specific hook so tests
-///         can exercise the per-action gate.
-/// @dev Stores the bound id as `bytes32` immutable to avoid relying on user-defined-value-type
-///      immutables; wraps back to `Id` in the getter.
+/// @notice Permissive controller recording every hook dispatch; `setRevertOn(event, true)` makes it
+///         block that specific hook.
 contract ControllerMock is ILidoLendMarketController {
-    bytes32 internal immutable _marketId;
+    Id internal immutable _marketId;
 
-    uint256 public hookCount;
     Id public lastId;
-    HookEvent public lastEvent;
     bytes public lastData;
-    mapping(uint8 => uint256) public eventCount;
+    uint256 public hookCount;
+    HookEvent public lastEvent;
 
-    mapping(uint8 => bool) public revertOn;
+    mapping(HookEvent => uint256) public eventCount;
+    mapping(HookEvent => bool) public revertOn;
 
     constructor(Id marketId_) {
-        _marketId = Id.unwrap(marketId_);
+        _marketId = marketId_;
     }
 
     function setRevertOn(HookEvent hookEvent, bool value) external {
-        revertOn[uint8(hookEvent)] = value;
+        revertOn[hookEvent] = value;
     }
 
     function marketId() external view returns (Id) {
-        return Id.wrap(_marketId);
+        return _marketId;
     }
 
     function on(Id id, HookEvent hookEvent, bytes calldata data) external {
-        if (revertOn[uint8(hookEvent)]) revert("controller: blocked");
+        if (revertOn[hookEvent]) revert("blocked by controller");
         hookCount++;
         lastId = id;
         lastEvent = hookEvent;
         lastData = data;
-        eventCount[uint8(hookEvent)]++;
+        eventCount[hookEvent]++;
     }
 }

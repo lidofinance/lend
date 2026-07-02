@@ -29,6 +29,8 @@ CORE = "LidoLend.sol/LidoLend.json"
 IMORPHO = "IMorpho.sol/IMorpho.json"
 ILIDOLEND = "ILidoLend.sol/ILidoLend.json"
 CONTROLLER = "ILidoLendMarketController.sol/ILidoLendMarketController.json"
+EVENTS = "EventsLib.sol/EventsLib.json"
+ERRORS = "ErrorsLib.sol/ErrorsLib.json"
 
 # solc does not emit natspec for `type X is Y` into any artifact, so supply Id's line by hand.
 ID_FALLBACK = "A market identifier, the `keccak256` hash of a `MarketParams`."
@@ -274,7 +276,10 @@ def render_struct(node, level) -> list:
     out += paras(nd["notice"], *nd["dev"])
     rows = [(f"`{m['name']}`", f"`{short_type(m['typeName'])}`", nd["params"].get(m["name"], ""))
             for m in node["members"]]
-    out += ["**Fields**", ""] + md_table(("Name", "Type", "Description"), rows) + [""]
+    # Skip the table when no field has a description: the solidity block above already lists
+    # names and types, so an undocumented struct gains nothing from repeating them.
+    if any(r[2] for r in rows):
+        out += ["**Fields**", ""] + md_table(("Name", "Type", "Description"), rows) + [""]
     return out
 
 
@@ -325,6 +330,51 @@ def render_contract(rel, name, reg, level) -> list:
     return out
 
 
+def render_event(node, level) -> list:
+    nd = parse_natspec(doc_text(node))
+    params = []
+    for p in node["parameters"]["parameters"]:
+        parts = [short_type(p["typeName"])]
+        if p.get("indexed"):
+            parts.append("indexed")
+        if p.get("name"):
+            parts.append(p["name"])
+        params.append(" ".join(parts))
+    sig = f"event {node['name']}({', '.join(params)});"
+    if len(sig) > 80 and params:
+        sig = f"event {node['name']}(\n" + ",\n".join(f"    {p}" for p in params) + "\n);"
+    out = [f"{'#' * level} `{node['name']}`", "", "```solidity", sig, "```", ""]
+    out += paras(nd["notice"], *nd["dev"])
+    rows = [(f"`{p['name']}`", f"`{short_type(p['typeName'])}`", nd["params"].get(p["name"], ""))
+            for p in node["parameters"]["parameters"] if p.get("name")]
+    if any(r[2] for r in rows):
+        out += ["**Parameters**", ""] + md_table(("Name", "Type", "Description"), rows) + [""]
+    return out
+
+
+def render_events(level) -> list:
+    lib = find(ast_of(EVENTS), "ContractDefinition", "EventsLib")
+    out = [f"{'#' * level} Events (`EventsLib`)", ""]
+    for ev in [n for n in lib["nodes"] if n.get("nodeType") == "EventDefinition"]:
+        out += render_event(ev, level + 1)
+    return out
+
+
+def render_errors(level) -> list:
+    """One table: revert strings are flat constants, a subsection each would be noise."""
+    lib = find(ast_of(ERRORS), "ContractDefinition", "ErrorsLib")
+    out = [f"{'#' * level} Errors (`ErrorsLib`)", ""]
+    rows = []
+    for v in lib["nodes"]:
+        if v.get("nodeType") != "VariableDeclaration" or not v.get("constant"):
+            continue
+        vd = parse_natspec(doc_text(v))
+        notice = " ".join((vd["notice"] or "").split())
+        rows.append((f"`{v['name']}`", f'`"{v["value"]["value"]}"`', notice))
+    out += md_table(("Constant", "Revert string", "Meaning"), rows) + [""]
+    return out
+
+
 # --------------------------------------------------------------------------- assembly
 
 def build_section() -> str:
@@ -340,6 +390,8 @@ def build_section() -> str:
 
     md += render_contract(CORE, "LidoLend", reg, BASE)
     md += render_contract(CONTROLLER, "ILidoLendMarketController", reg, BASE)
+    md += render_events(BASE)
+    md += render_errors(BASE)
 
     return re.sub(r"\n{3,}", "\n\n", "\n".join(md)).strip()
 

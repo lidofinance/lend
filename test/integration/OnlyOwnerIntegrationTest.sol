@@ -124,4 +124,19 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
         ILidoLend(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
     }
+
+    /* Coverage closures for inherited `ALREADY_SET` guards upstream left untested. */
+
+    function testSetFeeAlreadySet() public {
+        uint256 currentFee = morpho.fee(id);
+        vm.prank(OWNER);
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
+        morpho.setFee(marketParams, currentFee);
+    }
+
+    function testSetFeeRecipientAlreadySet() public {
+        vm.prank(OWNER);
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
+        morpho.setFeeRecipient(FEE_RECIPIENT);
+    }
 }

@@ -48,15 +48,28 @@ contract ERC20WithBooleanAlwaysFalse {
     }
 }
 
+/// @dev Token reverting on transfer and transferFrom.
+contract ERC20AlwaysReverting {
+    function transfer(address, uint256) public pure {
+        revert();
+    }
+
+    function transferFrom(address, address, uint256) public pure {
+        revert();
+    }
+}
+
 contract SafeTransferLibTest is Test {
     using SafeTransferLib for *;
 
     ERC20WithoutBoolean public tokenWithoutBoolean;
     ERC20WithBooleanAlwaysFalse public tokenWithBooleanAlwaysFalse;
+    ERC20AlwaysReverting public tokenAlwaysReverting;
 
     function setUp() public {
         tokenWithoutBoolean = new ERC20WithoutBoolean();
         tokenWithBooleanAlwaysFalse = new ERC20WithBooleanAlwaysFalse();
+        tokenAlwaysReverting = new ERC20AlwaysReverting();
     }
 
     function testSafeTransfer(address to, uint256 amount) public {
@@ -83,6 +96,19 @@ contract SafeTransferLibTest is Test {
 
         vm.expectRevert(bytes(ErrorsLib.TRANSFER_FROM_RETURNED_FALSE));
         this.safeTransferFrom(address(tokenWithBooleanAlwaysFalse), from, to, amount);
+    }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Coverage closures for inherited revert paths upstream left untested. */
+
+    function testSafeTransferWithRevert(address to, uint256 amount) public {
+        vm.expectRevert(bytes(ErrorsLib.TRANSFER_REVERTED));
+        this.safeTransfer(address(tokenAlwaysReverting), to, amount);
+    }
+
+    function testSafeTransferFromWithRevert(address from, address to, uint256 amount) public {
+        vm.expectRevert(bytes(ErrorsLib.TRANSFER_FROM_REVERTED));
+        this.safeTransferFrom(address(tokenAlwaysReverting), from, to, amount);
     }
 
     function testSafeTransferTokenNotCreated(address token, address to, uint256 amount) public {

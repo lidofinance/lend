@@ -40,6 +40,24 @@ contract CreateMarketIntegrationTest is BaseTest {
         assertEq(marketParamsFuzz.lltv, params.lltv, "lltv != lltv");
     }
 
+    function testCreateMarket(MarketParams memory marketParamsFuzz) public {
+        marketParamsFuzz.irm = address(irm);
+        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
+        Id marketParamsFuzzId = marketParamsFuzz.id();
+
+        vm.expectEmit(true, true, true, true, address(morpho));
+        emit EventsLib.CreateMarket(marketParamsFuzz.id(), marketParamsFuzz);
+        vm.prank(OWNER);
+        morpho.createMarket(marketParamsFuzz);
+
+        assertEq(morpho.lastUpdate(marketParamsFuzzId), block.timestamp, "lastUpdate != block.timestamp");
+        assertEq(morpho.totalSupplyAssets(marketParamsFuzzId), 0, "totalSupplyAssets != 0");
+        assertEq(morpho.totalSupplyShares(marketParamsFuzzId), 0, "totalSupplyShares != 0");
+        assertEq(morpho.totalBorrowAssets(marketParamsFuzzId), 0, "totalBorrowAssets != 0");
+        assertEq(morpho.totalBorrowShares(marketParamsFuzzId), 0, "totalBorrowShares != 0");
+        assertEq(morpho.fee(marketParamsFuzzId), 0, "fee != 0");
+    }
+
     /* ================================= LIDO FORK TESTS ================================= */
     /* Tests for fork-added behavior. */
 
@@ -86,23 +104,5 @@ contract CreateMarketIntegrationTest is BaseTest {
             assertNotEq(logs[i].topics[0], EventsLib.EnableIrm.selector, "EnableIrm re-emitted");
             assertNotEq(logs[i].topics[0], EventsLib.EnableLltv.selector, "EnableLltv re-emitted");
         }
-    }
-
-    function testCreateMarket(MarketParams memory marketParamsFuzz) public {
-        marketParamsFuzz.irm = address(irm);
-        marketParamsFuzz.lltv = _boundValidLltv(marketParamsFuzz.lltv);
-        Id marketParamsFuzzId = marketParamsFuzz.id();
-
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.CreateMarket(marketParamsFuzz.id(), marketParamsFuzz);
-        vm.prank(OWNER);
-        morpho.createMarket(marketParamsFuzz);
-
-        assertEq(morpho.lastUpdate(marketParamsFuzzId), block.timestamp, "lastUpdate != block.timestamp");
-        assertEq(morpho.totalSupplyAssets(marketParamsFuzzId), 0, "totalSupplyAssets != 0");
-        assertEq(morpho.totalSupplyShares(marketParamsFuzzId), 0, "totalSupplyShares != 0");
-        assertEq(morpho.totalBorrowAssets(marketParamsFuzzId), 0, "totalBorrowAssets != 0");
-        assertEq(morpho.totalBorrowShares(marketParamsFuzzId), 0, "totalBorrowShares != 0");
-        assertEq(morpho.fee(marketParamsFuzzId), 0, "fee != 0");
     }
 }

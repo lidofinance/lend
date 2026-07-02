@@ -5,11 +5,9 @@ import {Id} from "./IMorpho.sol";
 
 /// @title ILidoLendMarketController
 /// @author Lido.
-/// @notice The market controller's interface — the full coupling between the core and a controller:
-/// `marketId()`, checked when the controller is bound at market creation, and the `on(id, e, data)` hook
-/// entrypoint, through which the core dispatches every action (HookEvent order and struct layouts must
-/// match the core so the abi-encoded hook payloads stay compatible).
+/// @notice Interface that the controller of a market must implement.
 interface ILidoLendMarketController {
+    /// @notice The action being dispatched to the controller.
     enum HookEvent {
         Supply,
         Withdraw,
@@ -136,9 +134,13 @@ interface ILidoLendMarketController {
         uint256 seizedAssets;
     }
 
-    /// @notice The single market id this controller manages. Checked at market binding.
+    /// @notice The id of the single market this controller manages.
     function marketId() external view returns (Id);
 
-    /// @notice Strict action callback. Reverts to abort the calling action.
+    /// @notice Called by the core on each action listed in `HookEvent`, before the action's state changes
+    /// are applied.
+    /// @param id The id of the market the action is performed on.
+    /// @param hookEvent The action being performed.
+    /// @param data The abi-encoded hook payload: the `HookData` struct corresponding to `hookEvent`.
     function on(Id id, HookEvent hookEvent, bytes calldata data) external;
 }

@@ -12,26 +12,26 @@ import {MathLib} from "../libraries/MathLib.sol";
 
 /// @title EnforcingControllerMock
 /// @notice Controller that permits a `settle` cut only if the borrower stays solvent afterwards
-///         (post-cut collateral value >= post-cut debt). This encodes the guarantee the real
-///         `LidoMarketController` must provide, so the invariant suite can assert "core + a
-///         solvency-enforcing controller never creates bad debt". All other hooks are permissive.
+///         (post-cut collateral value >= post-cut debt) — the guarantee a production controller must
+///         provide, since the core itself has no solvency check on `settle`. All other hooks are
+///         permissive.
 contract EnforcingControllerMock is ILidoLendMarketController {
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
     using MathLib for uint256;
 
-    bytes32 internal immutable _marketId;
-    IMorpho internal immutable _morpho;
+    Id internal immutable _marketId;
+    IMorpho internal immutable _core;
     IOracle internal immutable _oracle;
 
-    constructor(Id marketId_, address morpho_, address oracle_) {
-        _marketId = Id.unwrap(marketId_);
-        _morpho = IMorpho(morpho_);
+    constructor(Id marketId_, address core_, address oracle_) {
+        _marketId = marketId_;
+        _core = IMorpho(core_);
         _oracle = IOracle(oracle_);
     }
 
     function marketId() external view returns (Id) {
-        return Id.wrap(_marketId);
+        return _marketId;
     }
 
     function on(Id id, HookEvent hookEvent, bytes calldata data) external view {
@@ -39,15 +39,15 @@ contract EnforcingControllerMock is ILidoLendMarketController {
 
         ILidoLendMarketController.SettleHookData memory d = abi.decode(data, (ILidoLendMarketController.SettleHookData));
 
-        // The hook fires before the core writes state, so these reads are the pre-cut position.
-        // The core has already checked seizedAssets <= collateral and the burn <= debt.
-        uint256 collateral = _morpho.collateral(id, d.borrower);
-        uint256 debt = _morpho.borrowShares(id, d.borrower)
-            .toAssetsUp(_morpho.totalBorrowAssets(id), _morpho.totalBorrowShares(id));
+        // The hook fires before the core writes state, so these reads are the pre-cut position, and the
+        // core has already bounded the cut (seizedAssets <= collateral, borrowSharesCanceled <= debt shares).
+        uint256 postCollateral = _core.collateral(id, d.borrower) - d.seizedAssets;
+        uint256 postDebt = (_core.borrowShares(id, d.borrower) - d.borrowSharesCanceled)
+        .toAssetsUp(
+            _core.totalBorrowAssets(id) - d.borrowAssetsCanceled, _core.totalBorrowShares(id) - d.borrowSharesCanceled
+        );
 
-        uint256 postCollateralValue = (collateral - d.seizedAssets).mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
-        uint256 postDebt = debt > d.borrowAssetsCanceled ? debt - d.borrowAssetsCanceled : 0;
-
-        require(postCollateralValue >= postDebt, "controller: would be insolvent");
+        uint256 postCollateralValue = postCollateral.mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
+        require(postCollateralValue >= postDebt, "borrower would be insolvent");
     }
 }

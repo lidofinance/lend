@@ -3,12 +3,24 @@
 LidoLend is a Morpho Blue fork. It keeps the Morpho isolated-market accounting and adds two main features:
 
 1. **Market controllers** — a market can be created with a controller contract bound to it. The core calls the controller before applying each market action, so custom policy can be enforced per action without touching user tokens.
-2. **`settle`** — a settlement primitive that lets a lender exit by canceling borrower debt against its supply shares when ordinary liquidity is exhausted.
+2. **`settle`** — a settlement primitive that lets a lender exit by canceling borrower debt against its supply shares, for the part of its supply that ordinary liquidity cannot serve.
 
 Two further changes:
 
 3. **Owner-gated market creation** — upstream creation is permissionless, with IRMs and LLTVs enabled separately. Here a single owner-only `createMarket` fixes everything about a market in one step.
 4. **Proxy deployment** — constructor setup becomes a one-shot initializer, and the EIP-712 domain separator is computed at call time.
+
+## Contents
+
+- [Inherited Behavior](#inherited-behavior)
+- [Market Creation](#market-creation)
+- [Controller Hooks](#controller-hooks)
+- [Settlement](#settlement)
+- [Proxy And Storage](#proxy-and-storage)
+- [Trust Assumptions](#trust-assumptions)
+- [Fork Delta](#fork-delta)
+- [References](#references)
+- [API Reference](#api-reference)
 
 ## Inherited Behavior
 
@@ -26,7 +38,7 @@ A position is liquidatable when its debt exceeds `LLTV × collateral value` at t
 
 `flashLoan` can lend any amount up to the contract's balance of a token — a balance that spans all markets — for one transaction, fee-free.
 
-A market created with no controller behaves identically to upstream Morpho Blue for every inherited action. The only observable differences are owner-gated creation and the proxy-related changes.
+A market created with no controller dispatches no hook of its own. Beyond owner-gated creation and the proxy-related changes, its one behavioral difference from upstream is the global hook lock: its actions revert while another market's hook is in flight (see Controller Hooks).
 
 ## Market Creation
 
@@ -34,14 +46,14 @@ A Morpho market is defined entirely by its `MarketParams`: the loan token, the c
 
 Keeping the controller out of the id has a consequence. One set of `MarketParams` is still one market, so it can carry only one controller, bound when the market is created and never changed afterward. Choosing that controller is therefore a one-time decision, and that is why creation is restricted to the owner where upstream Morpho lets anyone create a market: the binding has to be the owner's call rather than a race to create first. The core can only check that a controller was built for the market it is bound to, not that its policy is sound, so the owner also vets the market's dependencies (see Trust Assumptions).
 
-Because only the owner creates markets, the separate upstream step of enabling IRMs and LLTVs (`enableIrm` and `enableLltv`) is no longer needed and has been removed. Instead `createMarket` enables a market's IRM and LLTV on its own, still emitting the upstream `EnableIrm` and `EnableLltv` events. The `isIrmEnabled` and `isLltvEnabled` views still answer, but their meaning shifts: where upstream they were a pre-creation allowlist the owner curated, here they simply report whether some created market already uses that IRM or LLTV.
+Because only the owner creates markets, the separate upstream step of enabling IRMs and LLTVs (`enableIrm` and `enableLltv`) is no longer needed and has been removed. Instead `createMarket` enables a market's IRM and LLTV on its own, still emitting the upstream `EnableIrm` and `EnableLltv` events on an IRM's or LLTV's first use. The `isIrmEnabled` and `isLltvEnabled` views still answer, but their meaning shifts: where upstream they were a pre-creation allowlist the owner curated, here they simply report whether some created market already uses that IRM or LLTV.
 
 A market is created through one of two calls. `createMarket(params)` makes a plain market that has no controller and on which `settle` is unavailable. `createMarket(params, controller, enableSettlement)` makes a controlled market and rejects a zero controller (reverts `zero address`). Both bind their values permanently, with no setter to change them afterward:
 
 - `marketController[id]` holds the controller. Its `marketId()` must match the id being created, or creation reverts with `controller mismatch`. Binding it emits `SetMarketController`.
 - `isSettlementEnabled[id]` holds the `settle` opt-in. It can be set only in the controlled call, so settlement always comes with a controller. Enabling it emits `EnableSettlement`.
 
-Everything else about creation is inherited. The market must not already exist, `IIrm.borrowRate` runs once so a stateful IRM can initialize, and the upstream `CreateMarket` event is emitted.
+Everything else about creation is inherited. The LLTV must be below 100% (`max LLTV exceeded` — the check `enableLltv` used to run), the market must not already exist, `IIrm.borrowRate` runs once so a stateful IRM can initialize, and the upstream `CreateMarket` event is emitted.
 
 ## Controller Hooks
 
@@ -69,7 +81,7 @@ sequenceDiagram
 
 The tail of the diagram is schematic. The exact order of token transfers and the Morpho callback is per-action and unchanged from upstream — `liquidate`, for one, sends the seized collateral before its callback and pulls the loan repayment after.
 
-Two properties keep this safe. The hook fires after interest accrual and after the amounts are fully resolved, but before any state change or transfer, so the controller sees final numbers it cannot then alter. And a single transient lock is held for the length of `on`, so while a hook runs, re-entering any action reverts with `hook reentrancy`. The check sits in the dispatch that every action calls, so this also blocks an action on a different market or one with no controller. The lock guards only the hooked actions, so from inside a hook a controller can still reach `flashLoan` and the authorization calls, which dispatch no hook.
+Two properties keep this safe. The hook fires after interest accrual and after the amounts are fully resolved, but before any state change or transfer, so the controller sees final numbers it cannot then alter. And a single transient lock is held for the length of `on`, so while a hook runs, re-entering any hooked action reverts with `hook reentrancy`. The check sits in the dispatch that every action calls, so this also blocks an action on a different market or one with no controller. The lock guards only the hooked actions, so from inside a hook a controller can still reach `flashLoan` and the authorization calls, which dispatch no hook.
 
 A few actions deviate from that timing:
 
@@ -84,7 +96,7 @@ The hook is not the last gate. The inherited post-mutation checks (withdraw and 
 
 ## Settlement
 
-`settle` lets a lender exit through a borrower's position when ordinary liquidity is exhausted. The lender cancels borrower debt against its own supply shares, and the borrower's collateral moves to the receiver at the oracle price — no liquidation incentive (`LIF = 1`). The amount is given through exactly one of two anchors. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, so passing the borrower's whole `borrowShares` closes the position to zero, with the supply burn derived to match.
+`settle` lets a lender exit through a borrower's position, up to the part of its supply that ordinary liquidity cannot serve. The lender cancels borrower debt against its own supply shares, and the borrower's collateral moves to the receiver at the oracle price — no liquidation incentive (`LIF = 1`). The amount is given through exactly one of two anchors. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, so passing the borrower's whole `borrowShares` closes the position to zero, with the supply burn derived to match. `onBehalf` and `borrower` may coincide: a lender-borrower can cut its own position, since the supply burn and the borrow/collateral seizure hit distinct fields.
 
 The core derives the rest in order. `oraclePrice` is the market oracle's `price()` per upstream `IOracle` — collateral quoted in loan token, scaled by `ORACLE_PRICE_SCALE = 1e36` with token decimals folded in, the same price that feeds health checks and liquidation.
 
@@ -99,7 +111,7 @@ Three conversions round, each against the caller. Because both totals drop by th
    - **Loses:** the settling lender — the dropped fraction.
    - **Gains:** the other lenders — `totalSupplyAssets` fell by `floor(V)`, not `V`, lifting their per-share backing.
    - **If rounded up:** the lender could cancel more debt than its burned supply is worth — extraction.
-2. `borrowSharesToBurn = borrowAssetsCanceled.toSharesUp` — rounds **up**.
+2. `borrowSharesCanceled = borrowAssetsCanceled.toSharesUp` — rounds **up**.
    - For `A = debtCanceled` it burns `ceil` of the borrower's debt shares. `totalBorrowAssets` drops by `A` (fixed), `totalBorrowShares` by `ceil`, so the borrow index ticks up.
    - **Loses:** the other borrowers — they now owe a hair more.
    - **Gains:** the settled borrower — sheds a hair more shares for the same `A`.
@@ -132,19 +144,19 @@ One gate is specific to settle: after accrual, `debtCanceled` may not exceed `on
 
 The settle-specific gates fire in this order, after accrual and amount resolution. Each is a distinct revert string:
 
-1. `settlement exceeds debt` — the resolved `borrowSharesToBurn` exceeds the borrower's `borrowShares` (a supply-anchored cut worth more than the debt, or a borrower with no debt at all).
-2. `ordinary liquidity available` — `debtCanceled` exceeds the settleable cap above. This is also where a sole-borrower full closure (below) reverts.
+1. `settlement exceeds debt` — the resolved `borrowSharesCanceled` exceeds the borrower's `borrowShares` (a supply-anchored cut worth more than the debt, or a borrower with no debt at all).
+2. `settlement exceeds settleable supply` — `debtCanceled` exceeds the settleable cap above. This is also where a sole-borrower full closure (below) reverts.
 3. `settlement slice too small` — `seizedAssets` rounds to zero: at an extreme oracle price the cut is too small to seize even one collateral unit, which would cancel debt for no collateral, so it is blocked.
 4. `settlement exceeds collateral` — `seizedAssets` exceeds the borrower's collateral.
 
 The routine market-existence / `settlement disabled` / `inconsistent input` / `zero address` (receiver) / `unauthorized` checks run first, and the controller's `Settle` hook can revert on top of all of these.
 
-**No underflow, no `zeroFloorSub`.** The settleable cap bounds the cut from above: `debtCanceled ≤ settleableSupply ≤ min(totalSupplyAssets, totalBorrowAssets)`. `settleableSupply` is `onBehalf`'s supply valued down minus free liquidity, so it never exceeds `totalSupplyAssets`. Because free liquidity is `totalSupplyAssets − totalBorrowAssets` (floored at zero), subtracting it leaves at most `totalBorrowAssets`. Both asset totals are therefore `≥ debtCanceled` before the write, so `totalSupplyAssets -= debtCanceled` and `totalBorrowAssets -= debtCanceled` cannot underflow. The writes use plain checked subtraction rather than `zeroFloorSub`: the cap already makes the floor redundant, and the checked form reverts loudly if a future change ever broke that bound instead of silently clamping a total to zero. The share legs are bounded the same way — `borrowSharesToBurn ≤ borrower.borrowShares` (the debt gate), and the burned supply shares never exceed `onBehalf`'s own holding.
+**No underflow, no `zeroFloorSub`.** The settleable cap bounds the cut from above: `debtCanceled ≤ settleableSupply ≤ min(totalSupplyAssets, totalBorrowAssets)`. `settleableSupply` is `onBehalf`'s supply valued down minus free liquidity, so it never exceeds `totalSupplyAssets`. Because free liquidity is `totalSupplyAssets − totalBorrowAssets` (floored at zero), subtracting it leaves at most `totalBorrowAssets`. Both asset totals are therefore `≥ debtCanceled` before the write, so `totalSupplyAssets -= debtCanceled` and `totalBorrowAssets -= debtCanceled` cannot underflow. The writes use plain checked subtraction rather than `zeroFloorSub`: the cap already makes the floor redundant, and the checked form reverts loudly if a future change ever broke that bound instead of silently clamping a total to zero. The share legs are bounded the same way — `borrowSharesCanceled ≤ borrower.borrowShares` (the debt gate), and the burned supply shares never exceed `onBehalf`'s own holding.
 
 **Worked examples (drifted 1:1 market).** Interest has drifted a 1:1 market so both totals read 13 against 12e6 shares (a lender supplied 12, borrowers drew 7 and 5).
 
 - *Borrow-anchored close of the 7e6-share borrower.* Its fair value is `7e6 × 13 / 12e6 ≈ 7.58`, but `toAssetsUp` cancels `debtCanceled = 8`. The supply burn is `toSharesUp(8) = 7,428,572` and the seize at 1:1 is 8 collateral. The lender ends even (−8 of supply claim, +8 collateral), while the *other* borrower's debt drifts `6 → 5` — the one-wei relief of borrow-anchored step 1. Both totals fall `13 → 5`, still solvent.
-- *Sole borrower over the whole pool — the one closure the rounding forbids.* A lender supplies 12, a sole borrower draws the whole 12, interest drifts `totalBorrowAssets` to 13. Closing the whole debt needs `debtCanceled = toAssetsUp(12e6) = 13`, but the settleable cap is `toAssetsDown(12e6 supply) = 12` (free liquidity 0), so the cut reverts `ordinary liquidity available`. That gap is the one-wei virtual-share buffer — the debt valued up exceeds the supply valued down by a wei no input can back — and the same cap is why the total never underflows (it stops at `12 ≤ totalBorrowAssets`). The lender exits through `supplyShares` instead, cancels 12, and the unbacked wei stays on the borrower.
+- *Sole borrower over the whole pool — the one closure the rounding forbids.* A lender supplies 12, a sole borrower draws the whole 12, interest drifts `totalBorrowAssets` to 13. Closing the whole debt needs `debtCanceled = toAssetsUp(12e6) = 13`, but the settleable cap is `toAssetsDown(12e6 supply) = 12` (free liquidity 0), so the cut reverts `settlement exceeds settleable supply`. That gap is the one-wei virtual-share buffer — the debt valued up exceeds the supply valued down by a wei no input can back — and the same cap is why the total never underflows (it stops at `12 ≤ totalBorrowAssets`). The lender exits through `supplyShares` instead, cancels 12, and the unbacked wei stays on the borrower.
 - *Seize at a non-1:1 price.* At `oraclePrice = 3e36` (one collateral unit worth three loan units), a cut of `debtCanceled = 100` seizes `100 × 1e36 / 3e36 = 33` collateral — the fractional `.33` stays with the borrower (`mulDivDown`).
 
 The core performs **no health check on the borrower**. `settle` is soft liquidation and must reach unhealthy-but-solvent positions (`LLTV < LTV < 100%`) — a health gate would block exactly the positions it exists for. Two consequences: absent controller policy, even a healthy borrower can be cut — borrower selection and cut sizing are entirely the controller's responsibility — and bad-debt positions (`LTV > 100%`) must be excluded by the controller, not the core.
@@ -176,7 +188,7 @@ Storage layout is append-only — under a proxy this is load-bearing:
 | 10 | `isSettlementEnabled` | fork |
 | 11 | `isInitialized` | fork |
 
-The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) needs an EVM at Cancun or later. The fork builds with `evm_version = "cancun"` and Solidity 0.8.35 (above upstream's 0.8.19), so the target chain must support Cancun. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib` under `FORK-ADDED` sections.
+The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) needs an EVM at Cancun or later. The fork builds with `evm_version = "cancun"` and Solidity 0.8.35 (above upstream's 0.8.19), so the target chain must support Cancun. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib`.
 
 ## Trust Assumptions
 
@@ -203,7 +215,7 @@ The per-function API reference lives in API Reference below, generated from nats
 - **Controller hooks:** the nine state-changing actions dispatch the bound controller before mutating state, under a transient reentrancy lock.
 - **Proxy:** `DOMAIN_SEPARATOR` is recomputed per call, and constructor petrification plus `initialize` replace the upstream constructor.
 - **Storage:** `marketController`, `isSettlementEnabled`, and `isInitialized` are appended at slots 9–11.
-- **Errors and events:** the fork-added ones live in the `FORK-ADDED` sections of `ErrorsLib` and `EventsLib`.
+- **Errors and events:** the fork-added ones are appended in place to `ErrorsLib` and `EventsLib`.
 
 Every other inherited function body is unchanged from upstream — the rest of the source diff is the contract rename, import paths, and comments.
 
@@ -211,6 +223,7 @@ Every other inherited function body is unchanged from upstream — the rest of t
 
 - Morpho Blue source at the pinned commit and [`morpho-blue-whitepaper.pdf`](./morpho-blue-whitepaper.pdf) — normative for inherited behavior.
 - `FORK_NOTES.md` — canonical record of the fork point and delta.
+- `TEST_PLAN.md` — the property-to-test map for the behavior specified here.
 - `src/interfaces/ILidoLendMarketController.sol` — normative hook ABI.
 - `src/interfaces/ILidoLend.sol` — typed core surface for consumers. `ILidoLend` is struct-returning (`is IMorpho`), so it works directly with the Morpho periphery libraries.
 - API Reference below — the contract reference, generated from the solc AST by `make doc`.
@@ -242,18 +255,6 @@ struct MarketParams {
 }
 ```
 
-The immutable parameters that define a market and, hashed, its `Id`.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `loanToken` | `address` | The token lenders supply and borrowers borrow. |
-| `collateralToken` | `address` | The token borrowers post as collateral. |
-| `oracle` | `address` | Prices the collateral in loan-token terms. |
-| `irm` | `address` | The interest rate model. |
-| `lltv` | `uint256` | The liquidation loan-to-value, in WAD. |
-
 #### `Position`
 
 ```solidity
@@ -264,18 +265,8 @@ struct Position {
 }
 ```
 
-A single account's position in one market.
-
 > [!WARNING]
 > For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest accrual.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `supplyShares` | `uint256` | The account's supply shares. |
-| `borrowShares` | `uint128` | The account's borrow shares. |
-| `collateral` | `uint128` | The account's collateral, in collateral-token units. |
 
 #### `Market`
 
@@ -290,8 +281,6 @@ struct Market {
 }
 ```
 
-A market's aggregate accounting state.
-
 > [!WARNING]
 > `totalSupplyAssets` does not contain the accrued interest since the last interest accrual.
 
@@ -300,17 +289,6 @@ A market's aggregate accounting state.
 
 > [!WARNING]
 > `totalSupplyShares` does not contain the additional shares accrued by `feeRecipient` since the last interest accrual.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `totalSupplyAssets` | `uint128` | The total loan assets supplied to the market. |
-| `totalSupplyShares` | `uint128` | The total supply shares outstanding. |
-| `totalBorrowAssets` | `uint128` | The total loan assets borrowed from the market. |
-| `totalBorrowShares` | `uint128` | The total borrow shares outstanding. |
-| `lastUpdate` | `uint128` | The timestamp of the last interest accrual. |
-| `fee` | `uint128` | The market fee, in WAD, capped by `MAX_FEE`. |
 
 #### `Authorization`
 
@@ -324,18 +302,6 @@ struct Authorization {
 }
 ```
 
-An EIP-712 authorization message for `setAuthorizationWithSig`.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `authorizer` | `address` | The account granting or revoking the authorization. |
-| `authorized` | `address` | The account being authorized. |
-| `isAuthorized` | `bool` | Whether `authorized` becomes authorized for `authorizer`. |
-| `nonce` | `uint256` | The authorizer's current nonce, which blocks replay. |
-| `deadline` | `uint256` | The latest timestamp at which the signature is valid. |
-
 #### `Signature`
 
 ```solidity
@@ -346,21 +312,9 @@ struct Signature {
 }
 ```
 
-The `v`, `r`, and `s` components of an ECDSA signature.
-
-**Fields**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `v` | `uint8` | The recovery identifier. |
-| `r` | `bytes32` | The `r` component. |
-| `s` | `bytes32` | The `s` component. |
-
 ### `LidoLend`
 
-Morpho Blue fork core with optional per-market controllers.
-
-`Position`, `Market`, `MarketParams`, and market id derivation stay upstream-shaped. Optional per-market controllers can enforce additional policy through action hooks. The `settle` extension is enabled per market at creation, and only on a market that has a controller, so the controller's policy can govern who may be settled and by how much.
+The LidoLend contract: a Morpho Blue fork with per-market controller hooks and a `settle` primitive.
 
 #### Functions
 
@@ -370,21 +324,7 @@ Morpho Blue fork core with optional per-market controllers.
 constructor();
 ```
 
-Petrifies the implementation, so only a proxy can call `initialize`.
-
-##### `DOMAIN_SEPARATOR`
-
-```solidity
-function DOMAIN_SEPARATOR() public view returns (bytes32);
-```
-
-The EIP-712 domain separator.
-
-> [!WARNING]
-> Every EIP-712 signed message based on this domain separator can be reused on chains sharing the same chain id and on forks because the domain separator would be the same.
-
-> [!WARNING]
-> Unlike upstream Morpho, the separator is not baked into bytecode at construction: it is recomputed from the live `block.chainid` and `address(this)` on every call, so under the proxy it binds to the proxy address, and after a chain split it tracks the post-split chain id (pre-split signatures become invalid on the chain that changes id, instead of staying replayable as the warning above describes).
+Locks the implementation contract when it is deployed, preventing it from being initialized.
 
 ##### `initialize`
 
@@ -398,9 +338,9 @@ function initialize(address newOwner) external;
 | --- | --- | --- |
 | `newOwner` | `address` | The new owner of the contract. |
 
-One-shot initializer setting `newOwner` as `owner`. Called by the proxy at deploy time.
+Initializes the contract, setting `newOwner` as `owner`.
 
-Fork-added for the upgradeable-proxy deployment: the implementation is petrified by its constructor, so only a proxy's storage can be initialized, and only once.
+Can only be called once. The implementation contract cannot be initialized.
 
 ##### `setOwner`
 
@@ -477,7 +417,7 @@ Here is a list of assumptions on the market's dependencies which, if broken, cou
 The borrow share price of a market with less than 1e4 assets borrowed can be decreased by manipulations, to the point where `totalBorrowShares` is very large and borrowing overflows.
 
 > [!WARNING]
-> `createMarket` is `onlyOwner` in this fork, whereas upstream Morpho market creation is permissionless. Creating a market marks its `irm` and `lltv` as enabled on first use, emitting `EnableIrm`/`EnableLltv` (the standalone `enableIrm`/`enableLltv` are removed in this fork). This function creates a plain market with no controller. The three-argument overload in `ILidoLend` creates a controlled one.
+> Can only be called by the owner. The created market has no controller; see the overload in `ILidoLend`.
 
 ##### `createMarket`
 
@@ -494,12 +434,15 @@ function createMarket(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketParams` | `MarketParams` | The market to create. |
-| `controller` | `address` | The controller to bind. Must be non-zero and built for this market. |
-| `enableSettlement` | `bool` | Whether `settle` is enabled for this market. |
+| `controller` | `address` | The controller of the market. Must be non-zero. |
+| `enableSettlement` | `bool` | Whether `settle` is enabled on the market. |
 
-Creates the market `marketParams` as a controlled market, binding `controller` and the `settle` opt-in.
+Creates the market `marketParams` with `controller` bound and, if `enableSettlement`, `settle` enabled.
 
-Fork-added overload. Like the single-argument `createMarket` it is `onlyOwner`, and that single-argument call is the only way to create a market without a controller. The controller and `settle` opt-in cannot be changed after creation.
+> [!WARNING]
+> This function is `onlyOwner`, and the single-argument `createMarket` is the only way to create a market without a controller.
+
+The controller and the settlement flag cannot be changed after creation.
 
 ##### `_createMarket`
 
@@ -511,7 +454,9 @@ function _createMarket(
 ) internal;
 ```
 
-Implements both `createMarket` overloads. The `controller` and settlement opt-in cannot be changed after creation. Marks the market's `irm` and `lltv` as enabled on first use: the standalone `enableIrm`/`enableLltv` are removed in this fork since `createMarket` is `onlyOwner`.
+Creates the market `marketParams`, binding `controller` and the settlement opt-in.
+
+Assumes that `enableSettlement` is true only when `controller` is non-zero: settlement cannot be enabled on a market without a controller.
 
 ##### `supply`
 
@@ -755,25 +700,31 @@ function settle(
 | Name | Type | Description |
 | --- | --- | --- |
 | `marketParams` | `MarketParams` | The market to settle on. |
-| `supplyShares` | `uint256` | The amount of `onBehalf`'s supply shares to burn (supply-anchored settle, or zero). |
-| `borrowShares` | `uint256` | The exact count of `borrower`'s debt shares to cancel (borrow-anchored settle, or zero). Pass the borrower's whole `borrowShares` to close the position to zero. |
-| `onBehalf` | `address` | The address whose supply shares are burned. |
-| `borrower` | `address` | The borrower whose debt is canceled and collateral seized. |
-| `receiver` | `address` | The address that receives the seized collateral. |
+| `supplyShares` | `uint256` | The amount of `onBehalf`'s supply shares to burn. |
+| `borrowShares` | `uint256` | The amount of `borrower`'s debt shares to cancel. |
+| `onBehalf` | `address` | The address of the owner of the supply position. |
+| `borrower` | `address` | The address of the owner of the debt position. |
+| `receiver` | `address` | The address that will receive the seized collateral. |
 
 **Returns**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `seizedAssets` | `uint256` | The collateral-token amount seized and sent to `receiver`. |
-| `borrowAssetsCanceled` | `uint256` | The loan-token amount of `borrower` debt canceled (the settled value at par). |
+| `seizedAssets` | `uint256` | The amount of collateral seized and sent to `receiver`. |
+| `borrowAssetsCanceled` | `uint256` | The amount of debt canceled, in loan-token assets. |
 
-Cancels `borrower`'s debt against `onBehalf`'s supply shares, seizing collateral to `receiver`.
+Cancels `borrower`'s debt against `onBehalf`'s supply shares and seizes the corresponding collateral to `receiver`.
 
-Fork-added single-borrower primitive, enabled per market at creation. Exactly one of `supplyShares` or `borrowShares` is non-zero. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels borrower debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, so passing the borrower's whole `borrowShares` closes the position to zero (when `onBehalf`'s settleable supply covers it), with the supply burn derived to match. Callable only by `onBehalf` or an address authorized by `onBehalf`, and capped at the part of `onBehalf`'s supply that ordinary withdraw liquidity cannot serve (its value minus free liquidity). The bound controller's `Settle` hook enforces borrower eligibility and the per-cut slice cap, and may revert. Reverts while another action's controller hook is executing.
+Either `supplyShares` or `borrowShares` should be zero. `supplyShares` burns that many of `onBehalf`'s supply shares and cancels borrower debt worth their value at par. `borrowShares` cancels that exact count of the borrower's debt shares, deriving the supply burn; to close the position to zero, pass the borrower's whole `borrowShares` balance.
+
+`msg.sender` must be authorized to manage `onBehalf`'s positions.
+
+Settlement must be enabled on the market.
+
+The canceled debt is capped at the part of `onBehalf`'s supply that the market's available liquidity cannot serve.
 
 > [!WARNING]
-> A sole borrower spanning the whole pool cannot be closed to zero through `borrowShares` when the lender holds no surplus. The debt valued up exceeds the lender's settleable supply (valued down) by the one-wei virtual-share buffer, so the cut reverts on the settleable cap. That wei is unbacked and no input can settle it. The lender still exits through `supplyShares`, which cancels everything its supply backs and leaves the wei.
+> This function calls the controller's `Settle` hook after interest accrual and before applying the state changes, and reverts when reentered from a controller hook. The hook itself may revert.
 
 ##### `liquidate`
 
@@ -842,6 +793,19 @@ Flash loans have access to the whole balance of the contract (the liquidity and 
 - `maxFlashLoan` is the token's balance of this contract.
 - The receiver of `assets` is the caller.
 
+##### `DOMAIN_SEPARATOR`
+
+```solidity
+function DOMAIN_SEPARATOR() public view returns (bytes32);
+```
+
+The EIP-712 domain separator.
+
+> [!WARNING]
+> Every EIP-712 signed message based on this domain separator can be reused on chains sharing the same chain id and on forks because the domain separator would be the same.
+
+The separator is recomputed on every call.
+
 ##### `setAuthorization`
 
 ```solidity
@@ -881,9 +845,6 @@ Sets the authorization for `authorization.authorized` to manage `authorization.a
 The signature is malleable, but it has no impact on the security here.
 
 The nonce is passed as argument to be able to revert with a different error message.
-
-> [!WARNING]
-> The EIP-712 digest is built from the fork's recomputed `DOMAIN_SEPARATOR()`. Signature validity around the proxy and chain splits therefore differs from upstream as described on `DOMAIN_SEPARATOR`.
 
 ##### `_isSenderAuthorized`
 
@@ -948,20 +909,10 @@ Rounds in favor of the protocol, so one might not be able to borrow exactly `max
 ##### `_hook`
 
 ```solidity
-function _hook(Id id, HookEvent e, bytes memory data) internal;
+function _hook(Id id, HookEvent hookEvent, bytes memory data) internal;
 ```
 
-Single strict-callback dispatch into the controller. ABI-encoded payloads keep the core fork surface minimal, and the controller decodes per-event in its `on()` handler.
-
-Doubles as the reentrancy gate: while any controller hook is in flight, re-entering any action reverts — including actions on markets with no controller. The lock is released before the calling function writes state and runs Morpho callbacks.
-
-##### `_availableLiquidity`
-
-```solidity
-function _availableLiquidity(Id id) internal view returns (uint256);
-```
-
-Returns the market's loan assets not currently borrowed. Does not include interest accrued since the last update.
+Reentrancy gate: while a hook is in flight, every hooked action reverts — including actions on markets with no controller.
 
 ##### `_settleableSupply`
 
@@ -972,7 +923,7 @@ function _settleableSupply(
 ) internal view returns (uint256);
 ```
 
-The portion of `onBehalf`'s supply that exceeds the market's freely-withdrawable liquidity, i.e. the most a settle may cancel. Saturating: 0 when the supply is fully covered by liquidity.
+The part of `onBehalf`'s supply position that would remain after withdrawing all of the market's available liquidity: the part that only a settle can close.
 
 ##### `extSloads`
 
@@ -998,7 +949,7 @@ It has the power to change the owner.
 
 It has the power to set fees on markets and set the fee recipient.
 
-It has the power to create markets. Creating a market enables its IRM and LLTV, and neither can be disabled afterwards.
+It has the power to create markets, which enables their IRMs and LLTVs.
 
 ##### `feeRecipient`
 
@@ -1046,7 +997,7 @@ mapping(address => bool) public isIrmEnabled
 
 Whether the `irm` is enabled.
 
-An IRM becomes enabled when the first market using it is created (the standalone `enableIrm` of upstream Morpho is removed in this fork). Enabled IRMs cannot be disabled.
+An IRM becomes enabled when the first market using it is created. It is not possible to disable an IRM.
 
 ##### `isLltvEnabled`
 
@@ -1056,7 +1007,7 @@ mapping(uint256 => bool) public isLltvEnabled
 
 Whether the `lltv` is enabled.
 
-An LLTV becomes enabled when the first market using it is created (the standalone `enableLltv` of upstream Morpho is removed in this fork). Enabled LLTVs cannot be disabled.
+An LLTV becomes enabled when the first market using it is created. It is not possible to disable a LLTV.
 
 ##### `isAuthorized`
 
@@ -1092,9 +1043,9 @@ This mapping is not used in Morpho. It is there to enable reducing the cost asso
 mapping(Id => address) public marketController
 ```
 
-The controller bound to the market corresponding to `id`. Zero address means no controller.
+The controller of the market corresponding to `id`. Zero if the market has no controller.
 
-Set only at market creation, immutable thereafter.
+Cannot be changed after market creation.
 
 ##### `isSettlementEnabled`
 
@@ -1102,9 +1053,9 @@ Set only at market creation, immutable thereafter.
 mapping(Id => bool) public isSettlementEnabled
 ```
 
-Whether `settle` is enabled for the market corresponding to `id`.
+Whether `settle` is enabled on the market corresponding to `id`.
 
-Set only at market creation, immutable thereafter.
+Cannot be changed after market creation.
 
 ##### `isInitialized`
 
@@ -1114,19 +1065,17 @@ bool public isInitialized
 
 Whether the contract is initialized.
 
-The implementation is petrified to `true` by its constructor. A proxy starts at `false` and flips on its one-shot `initialize` call.
-
 ##### `_hookInProgress`
 
 ```solidity
 bool internal _hookInProgress
 ```
 
-Reentrancy lock held while a controller hook executes. Transient: occupies no persistent slot, so the upgrade-safe layout is unaffected.
+Reentrancy lock held while a controller hook executes.
 
 ### `ILidoLendMarketController`
 
-The market controller's interface — the full coupling between the core and a controller: `marketId()`, checked when the controller is bound at market creation, and the `on(id, e, data)` hook entrypoint, through which the core dispatches every action (HookEvent order and struct layouts must match the core so the abi-encoded hook payloads stay compatible).
+Interface that the controller of a market must implement.
 
 #### Functions
 
@@ -1136,7 +1085,7 @@ The market controller's interface — the full coupling between the core and a c
 function marketId() external view returns (Id);
 ```
 
-The single market id this controller manages. Checked at market binding.
+The id of the single market this controller manages.
 
 ##### `on`
 
@@ -1144,7 +1093,15 @@ The single market id this controller manages. Checked at market binding.
 function on(Id id, HookEvent hookEvent, bytes calldata data) external;
 ```
 
-Strict action callback. Reverts to abort the calling action.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The id of the market the action is performed on. |
+| `hookEvent` | `HookEvent` | The action being performed. |
+| `data` | `bytes` | The abi-encoded hook payload: the `HookData` struct corresponding to `hookEvent`. |
+
+Called by the core on each action listed in `HookEvent`, before the action's state changes are applied.
 
 #### Enums
 
@@ -1163,6 +1120,8 @@ enum HookEvent {
     Settle
 }
 ```
+
+The action being dispatched to the controller.
 
 #### Structs
 
@@ -1369,5 +1328,448 @@ Payload for the `Settle` hook.
 | `borrowAssetsCanceled` | `uint256` | The loan-token debt canceled, computed in core. |
 | `borrowSharesCanceled` | `uint256` | The borrow shares burned from borrower, computed in core. |
 | `seizedAssets` | `uint256` | The collateral-token amount seized, computed in core. |
+
+### Events (`EventsLib`)
+
+#### `SetOwner`
+
+```solidity
+event SetOwner(address indexed newOwner);
+```
+
+Emitted when setting a new owner.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `newOwner` | `address` | The new owner of the contract. |
+
+#### `SetFee`
+
+```solidity
+event SetFee(Id indexed id, uint256 newFee);
+```
+
+Emitted when setting a new fee.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `newFee` | `uint256` | The new fee. |
+
+#### `SetFeeRecipient`
+
+```solidity
+event SetFeeRecipient(address indexed newFeeRecipient);
+```
+
+Emitted when setting a new fee recipient.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `newFeeRecipient` | `address` | The new fee recipient. |
+
+#### `EnableIrm`
+
+```solidity
+event EnableIrm(address indexed irm);
+```
+
+Emitted when enabling an IRM.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `irm` | `address` | The IRM that was enabled. |
+
+#### `EnableLltv`
+
+```solidity
+event EnableLltv(uint256 lltv);
+```
+
+Emitted when enabling an LLTV.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `lltv` | `uint256` | The LLTV that was enabled. |
+
+#### `CreateMarket`
+
+```solidity
+event CreateMarket(Id indexed id, MarketParams marketParams);
+```
+
+Emitted when creating a market.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `marketParams` | `MarketParams` | The market that was created. |
+
+#### `Supply`
+
+```solidity
+event Supply(
+    Id indexed id,
+    address indexed caller,
+    address indexed onBehalf,
+    uint256 assets,
+    uint256 shares
+);
+```
+
+Emitted on supply of assets.
+
+> [!WARNING]
+> `feeRecipient` receives some shares during interest accrual without any supply event emitted.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `assets` | `uint256` | The amount of assets supplied. |
+| `shares` | `uint256` | The amount of shares minted. |
+
+#### `Withdraw`
+
+```solidity
+event Withdraw(
+    Id indexed id,
+    address caller,
+    address indexed onBehalf,
+    address indexed receiver,
+    uint256 assets,
+    uint256 shares
+);
+```
+
+Emitted on withdrawal of assets.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `receiver` | `address` | The address that received the withdrawn assets. |
+| `assets` | `uint256` | The amount of assets withdrawn. |
+| `shares` | `uint256` | The amount of shares burned. |
+
+#### `Borrow`
+
+```solidity
+event Borrow(
+    Id indexed id,
+    address caller,
+    address indexed onBehalf,
+    address indexed receiver,
+    uint256 assets,
+    uint256 shares
+);
+```
+
+Emitted on borrow of assets.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `receiver` | `address` | The address that received the borrowed assets. |
+| `assets` | `uint256` | The amount of assets borrowed. |
+| `shares` | `uint256` | The amount of shares minted. |
+
+#### `Repay`
+
+```solidity
+event Repay(
+    Id indexed id,
+    address indexed caller,
+    address indexed onBehalf,
+    uint256 assets,
+    uint256 shares
+);
+```
+
+Emitted on repayment of assets.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `assets` | `uint256` | The amount of assets repaid. May be 1 over the corresponding market's `totalBorrowAssets`. |
+| `shares` | `uint256` | The amount of shares burned. |
+
+#### `SupplyCollateral`
+
+```solidity
+event SupplyCollateral(
+    Id indexed id,
+    address indexed caller,
+    address indexed onBehalf,
+    uint256 assets
+);
+```
+
+Emitted on supply of collateral.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `assets` | `uint256` | The amount of collateral supplied. |
+
+#### `WithdrawCollateral`
+
+```solidity
+event WithdrawCollateral(
+    Id indexed id,
+    address caller,
+    address indexed onBehalf,
+    address indexed receiver,
+    uint256 assets
+);
+```
+
+Emitted on withdrawal of collateral.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `onBehalf` | `address` | The owner of the modified position. |
+| `receiver` | `address` | The address that received the withdrawn collateral. |
+| `assets` | `uint256` | The amount of collateral withdrawn. |
+
+#### `Liquidate`
+
+```solidity
+event Liquidate(
+    Id indexed id,
+    address indexed caller,
+    address indexed borrower,
+    uint256 repaidAssets,
+    uint256 repaidShares,
+    uint256 seizedAssets,
+    uint256 badDebtAssets,
+    uint256 badDebtShares
+);
+```
+
+Emitted on liquidation of a position.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller. |
+| `borrower` | `address` | The borrower of the position. |
+| `repaidAssets` | `uint256` | The amount of assets repaid. May be 1 over the corresponding market's `totalBorrowAssets`. |
+| `repaidShares` | `uint256` | The amount of shares burned. |
+| `seizedAssets` | `uint256` | The amount of collateral seized. |
+| `badDebtAssets` | `uint256` | The amount of assets of bad debt realized. |
+| `badDebtShares` | `uint256` | The amount of borrow shares of bad debt realized. |
+
+#### `FlashLoan`
+
+```solidity
+event FlashLoan(address indexed caller, address indexed token, uint256 assets);
+```
+
+Emitted on flash loan.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The caller. |
+| `token` | `address` | The token that was flash loaned. |
+| `assets` | `uint256` | The amount that was flash loaned. |
+
+#### `SetAuthorization`
+
+```solidity
+event SetAuthorization(
+    address indexed caller,
+    address indexed authorizer,
+    address indexed authorized,
+    bool newIsAuthorized
+);
+```
+
+Emitted when setting an authorization.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The caller. |
+| `authorizer` | `address` | The authorizer address. |
+| `authorized` | `address` | The authorized address. |
+| `newIsAuthorized` | `bool` | The new authorization status. |
+
+#### `IncrementNonce`
+
+```solidity
+event IncrementNonce(
+    address indexed caller,
+    address indexed authorizer,
+    uint256 usedNonce
+);
+```
+
+Emitted when setting an authorization with a signature.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `caller` | `address` | The caller. |
+| `authorizer` | `address` | The authorizer address. |
+| `usedNonce` | `uint256` | The nonce that was used. |
+
+#### `AccrueInterest`
+
+```solidity
+event AccrueInterest(
+    Id indexed id,
+    uint256 prevBorrowRate,
+    uint256 interest,
+    uint256 feeShares
+);
+```
+
+Emitted when accruing interest.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `prevBorrowRate` | `uint256` | The previous borrow rate. |
+| `interest` | `uint256` | The amount of interest accrued. |
+| `feeShares` | `uint256` | The amount of shares minted as fee. |
+
+#### `SetMarketController`
+
+```solidity
+event SetMarketController(Id indexed id, address indexed controller);
+```
+
+Emitted when a market's controller is bound at creation.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `controller` | `address` | The bound controller. |
+
+#### `EnableSettlement`
+
+```solidity
+event EnableSettlement(Id indexed id);
+```
+
+Emitted when `settle` is enabled for a market at creation.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+
+#### `Settle`
+
+```solidity
+event Settle(
+    Id indexed id,
+    address caller,
+    address indexed onBehalf,
+    address indexed borrower,
+    address receiver,
+    uint256 supplySharesBurned,
+    uint256 borrowAssetsCanceled,
+    uint256 borrowSharesCanceled,
+    uint256 seizedAssets
+);
+```
+
+Emitted on a successful `settle`.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `id` | `Id` | The market id. |
+| `caller` | `address` | The caller of `settle`. |
+| `onBehalf` | `address` | The supply-side account whose shares are burned. |
+| `borrower` | `address` | The borrower whose debt and collateral are reduced. |
+| `receiver` | `address` | The address that received the seized collateral. |
+| `supplySharesBurned` | `uint256` | The supply shares burned from `onBehalf`. |
+| `borrowAssetsCanceled` | `uint256` | The borrow assets canceled from `borrower`. |
+| `borrowSharesCanceled` | `uint256` | The borrow shares burned from `borrower`. |
+| `seizedAssets` | `uint256` | The collateral seized from `borrower` and sent to `receiver`. |
+
+### Errors (`ErrorsLib`)
+
+| Constant | Revert string | Meaning |
+| --- | --- | --- |
+| `NOT_OWNER` | `"not owner"` | Thrown when the caller is not the owner. |
+| `MAX_LLTV_EXCEEDED` | `"max LLTV exceeded"` | Thrown when the LLTV to enable exceeds the maximum LLTV. |
+| `MAX_FEE_EXCEEDED` | `"max fee exceeded"` | Thrown when the fee to set exceeds the maximum fee. |
+| `ALREADY_SET` | `"already set"` | Thrown when the value is already set. |
+| `MARKET_ALREADY_CREATED` | `"market already created"` | Thrown when the market is already created. |
+| `NO_CODE` | `"no code"` | Thrown when a token to transfer doesn't have code. |
+| `MARKET_NOT_CREATED` | `"market not created"` | Thrown when the market is not created. |
+| `INCONSISTENT_INPUT` | `"inconsistent input"` | Thrown when not exactly one of the input amounts is zero. |
+| `ZERO_ASSETS` | `"zero assets"` | Thrown when zero assets is passed as input. |
+| `ZERO_ADDRESS` | `"zero address"` | Thrown when a zero address is passed as input. |
+| `UNAUTHORIZED` | `"unauthorized"` | Thrown when the caller is not authorized to conduct an action. |
+| `INSUFFICIENT_COLLATERAL` | `"insufficient collateral"` | Thrown when the collateral is insufficient to `borrow` or `withdrawCollateral`. |
+| `INSUFFICIENT_LIQUIDITY` | `"insufficient liquidity"` | Thrown when the liquidity is insufficient to `withdraw` or `borrow`. |
+| `HEALTHY_POSITION` | `"position is healthy"` | Thrown when the position to liquidate is healthy. |
+| `INVALID_SIGNATURE` | `"invalid signature"` | Thrown when the authorization signature is invalid. |
+| `SIGNATURE_EXPIRED` | `"signature expired"` | Thrown when the authorization signature is expired. |
+| `INVALID_NONCE` | `"invalid nonce"` | Thrown when the nonce is invalid. |
+| `TRANSFER_REVERTED` | `"transfer reverted"` | Thrown when a token transfer reverted. |
+| `TRANSFER_RETURNED_FALSE` | `"transfer returned false"` | Thrown when a token transfer returned false. |
+| `TRANSFER_FROM_REVERTED` | `"transferFrom reverted"` | Thrown when a token transferFrom reverted. |
+| `TRANSFER_FROM_RETURNED_FALSE` | `"transferFrom returned false"` | Thrown when a token transferFrom returned false |
+| `MAX_UINT128_EXCEEDED` | `"max uint128 exceeded"` | Thrown when the maximum uint128 is exceeded. |
+| `CONTROLLER_MISMATCH` | `"controller mismatch"` | Thrown when a controller is bound whose `marketId` does not match the market. |
+| `SETTLEMENT_DISABLED` | `"settlement disabled"` | Thrown when `settle` is called on a market that did not opt into it. |
+| `SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY` | `"settlement exceeds settleable supply"` | Thrown when the settlement slice exceeds the part of the supply that available liquidity cannot serve. |
+| `SETTLEMENT_SLICE_TOO_SMALL` | `"settlement slice too small"` | Thrown when the settlement slice is too small to seize any collateral (rounds to zero). |
+| `SETTLEMENT_EXCEEDS_COLLATERAL` | `"settlement exceeds collateral"` | Thrown when the settlement slice would seize more than the borrower's collateral. |
+| `SETTLEMENT_EXCEEDS_DEBT` | `"settlement exceeds debt"` | Thrown when the settlement slice would cancel more than the borrower's debt. |
+| `ALREADY_INITIALIZED` | `"already initialized"` | Thrown when `initialize` is called after the contract is already initialized. |
+| `HOOK_REENTRANCY` | `"hook reentrancy"` | Thrown when a hooked action is reentered while a controller hook is executing. |
 
 <!-- END AUTOGENERATED API -->

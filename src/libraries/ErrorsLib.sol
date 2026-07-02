@@ -17,12 +17,6 @@ library ErrorsLib {
     /// @notice Thrown when the value is already set.
     string internal constant ALREADY_SET = "already set";
 
-    /// @notice Thrown when the IRM is not enabled at market creation.
-    string internal constant IRM_NOT_ENABLED = "IRM not enabled";
-
-    /// @notice Thrown when the LLTV is not enabled at market creation.
-    string internal constant LLTV_NOT_ENABLED = "LLTV not enabled";
-
     /// @notice Thrown when the market is already created.
     string internal constant MARKET_ALREADY_CREATED = "market already created";
 
@@ -77,16 +71,15 @@ library ErrorsLib {
     /// @notice Thrown when the maximum uint128 is exceeded.
     string internal constant MAX_UINT128_EXCEEDED = "max uint128 exceeded";
 
-    /* FORK-ADDED ERRORS */
-
     /// @notice Thrown when a controller is bound whose `marketId` does not match the market.
     string internal constant CONTROLLER_MISMATCH = "controller mismatch";
 
     /// @notice Thrown when `settle` is called on a market that did not opt into it.
     string internal constant SETTLEMENT_DISABLED = "settlement disabled";
 
-    /// @notice Thrown when `settle` is called while ordinary withdraw liquidity still covers the amount.
-    string internal constant SETTLEMENT_LIQUIDITY_AVAILABLE = "ordinary liquidity available";
+    /// @notice Thrown when the settlement slice exceeds the part of the supply that available liquidity cannot
+    /// serve.
+    string internal constant SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY = "settlement exceeds settleable supply";
 
     /// @notice Thrown when the settlement slice is too small to seize any collateral (rounds to zero).
     string internal constant SETTLEMENT_SLICE_TOO_SMALL = "settlement slice too small";
@@ -100,6 +93,6 @@ library ErrorsLib {
     /// @notice Thrown when `initialize` is called after the contract is already initialized.
     string internal constant ALREADY_INITIALIZED = "already initialized";
 
-    /// @notice Thrown when a locked entrypoint is reentered while a controller hook is executing.
+    /// @notice Thrown when a hooked action is reentered while a controller hook is executing.
     string internal constant HOOK_REENTRANCY = "hook reentrancy";
 }

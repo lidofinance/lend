@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.5.0;
 
-/// @notice A market identifier, the `keccak256` hash of a `MarketParams`.
 type Id is bytes32;
 
-/// @notice The immutable parameters that define a market and, hashed, its `Id`.
-/// @param loanToken The token lenders supply and borrowers borrow.
-/// @param collateralToken The token borrowers post as collateral.
-/// @param oracle Prices the collateral in loan-token terms.
-/// @param irm The interest rate model.
-/// @param lltv The liquidation loan-to-value, in WAD.
 struct MarketParams {
     address loanToken;
     address collateralToken;
@@ -18,29 +11,18 @@ struct MarketParams {
     uint256 lltv;
 }
 
-/// @notice A single account's position in one market.
 /// @dev Warning: For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest
 /// accrual.
-/// @param supplyShares The account's supply shares.
-/// @param borrowShares The account's borrow shares.
-/// @param collateral The account's collateral, in collateral-token units.
 struct Position {
     uint256 supplyShares;
     uint128 borrowShares;
     uint128 collateral;
 }
 
-/// @notice A market's aggregate accounting state.
 /// @dev Warning: `totalSupplyAssets` does not contain the accrued interest since the last interest accrual.
 /// @dev Warning: `totalBorrowAssets` does not contain the accrued interest since the last interest accrual.
 /// @dev Warning: `totalSupplyShares` does not contain the additional shares accrued by `feeRecipient` since the last
 /// interest accrual.
-/// @param totalSupplyAssets The total loan assets supplied to the market.
-/// @param totalSupplyShares The total supply shares outstanding.
-/// @param totalBorrowAssets The total loan assets borrowed from the market.
-/// @param totalBorrowShares The total borrow shares outstanding.
-/// @param lastUpdate The timestamp of the last interest accrual.
-/// @param fee The market fee, in WAD, capped by `MAX_FEE`.
 struct Market {
     uint128 totalSupplyAssets;
     uint128 totalSupplyShares;
@@ -50,12 +32,6 @@ struct Market {
     uint128 fee;
 }
 
-/// @notice An EIP-712 authorization message for `setAuthorizationWithSig`.
-/// @param authorizer The account granting or revoking the authorization.
-/// @param authorized The account being authorized.
-/// @param isAuthorized Whether `authorized` becomes authorized for `authorizer`.
-/// @param nonce The authorizer's current nonce, which blocks replay.
-/// @param deadline The latest timestamp at which the signature is valid.
 struct Authorization {
     address authorizer;
     address authorized;
@@ -64,10 +40,6 @@ struct Authorization {
     uint256 deadline;
 }
 
-/// @notice The `v`, `r`, and `s` components of an ECDSA signature.
-/// @param v The recovery identifier.
-/// @param r The `r` component.
-/// @param s The `s` component.
 struct Signature {
     uint8 v;
     bytes32 r;
@@ -80,17 +52,13 @@ interface IMorphoBase {
     /// @notice The EIP-712 domain separator.
     /// @dev Warning: Every EIP-712 signed message based on this domain separator can be reused on chains sharing the
     /// same chain id and on forks because the domain separator would be the same.
-    /// @dev Warning: Unlike upstream Morpho, the separator is not baked into bytecode at construction: it is
-    /// recomputed from the live `block.chainid` and `address(this)` on every call, so under the proxy it binds to the
-    /// proxy address, and after a chain split it tracks the post-split chain id (pre-split signatures become invalid
-    /// on the chain that changes id, instead of staying replayable as the warning above describes).
+    /// @dev The separator is recomputed on every call.
     function DOMAIN_SEPARATOR() external view returns (bytes32);
 
     /// @notice The owner of the contract.
     /// @dev It has the power to change the owner.
     /// @dev It has the power to set fees on markets and set the fee recipient.
-    /// @dev It has the power to create markets. Creating a market enables its IRM and LLTV, and neither can be
-    /// disabled afterwards.
+    /// @dev It has the power to create markets, which enables their IRMs and LLTVs.
     function owner() external view returns (address);
 
     /// @notice The fee recipient of all markets.
@@ -98,13 +66,11 @@ interface IMorphoBase {
     function feeRecipient() external view returns (address);
 
     /// @notice Whether the `irm` is enabled.
-    /// @dev An IRM becomes enabled when the first market using it is created (the standalone `enableIrm` of upstream
-    /// Morpho is removed in this fork). Enabled IRMs cannot be disabled.
+    /// @dev An IRM becomes enabled when the first market using it is created. It is not possible to disable an IRM.
     function isIrmEnabled(address irm) external view returns (bool);
 
     /// @notice Whether the `lltv` is enabled.
-    /// @dev An LLTV becomes enabled when the first market using it is created (the standalone `enableLltv` of
-    /// upstream Morpho is removed in this fork). Enabled LLTVs cannot be disabled.
+    /// @dev An LLTV becomes enabled when the first market using it is created. It is not possible to disable a LLTV.
     function isLltvEnabled(uint256 lltv) external view returns (bool);
 
     /// @notice Whether `authorized` is authorized to modify `authorizer`'s position on all markets.
@@ -157,11 +123,8 @@ interface IMorphoBase {
     /// `assetsRepaid` in `liquidate` can overflow).
     /// @dev The borrow share price of a market with less than 1e4 assets borrowed can be decreased by manipulations, to
     /// the point where `totalBorrowShares` is very large and borrowing overflows.
-    /// @dev Warning: `createMarket` is `onlyOwner` in this fork, whereas upstream Morpho market creation is
-    /// permissionless. Creating a market marks its `irm` and `lltv` as enabled on first use, emitting
-    /// `EnableIrm`/`EnableLltv` (the standalone `enableIrm`/`enableLltv` are removed in this fork). This function
-    /// creates a plain market with no controller. The three-argument overload in `ILidoLend` creates a controlled
-    /// one.
+    /// @dev Warning: Can only be called by the owner. The created market has no controller; see the overload in
+    /// `ILidoLend`.
     function createMarket(MarketParams memory marketParams) external;
 
     /// @notice Supplies `assets` or `shares` on behalf of `onBehalf`, optionally calling back the caller's
@@ -338,8 +301,6 @@ interface IMorphoBase {
     /// @dev Warning: Reverts if the signature has already been submitted.
     /// @dev The signature is malleable, but it has no impact on the security here.
     /// @dev The nonce is passed as argument to be able to revert with a different error message.
-    /// @dev Warning: The EIP-712 digest is built from the fork's recomputed `DOMAIN_SEPARATOR()`. Signature validity
-    /// around the proxy and chain splits therefore differs from upstream as described on `DOMAIN_SEPARATOR`.
     /// @param authorization The `Authorization` struct.
     /// @param signature The signature.
     function setAuthorizationWithSig(Authorization calldata authorization, Signature calldata signature) external;
@@ -393,8 +354,6 @@ interface IMorphoStaticTyping is IMorphoBase {
 /// @title IMorpho
 /// @author Morpho Labs. Modified by Lido.
 /// @dev Use this interface for Morpho to have access to all the functions with the appropriate function signatures.
-/// For the fork-added members (`initialize`, the `createMarket` overload, `settle`, `marketController`,
-/// `isSettlementEnabled`), see `ILidoLend`.
 interface IMorpho is IMorphoBase {
     /// @notice The state of the position of `user` on the market corresponding to `id`.
     /// @dev Warning: For `feeRecipient`, `p.supplyShares` does not contain the accrued shares since the last interest

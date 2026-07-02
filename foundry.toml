@@ -9,6 +9,9 @@ bytecode_hash = "none"
 solc = "0.8.35"
 evm_version = "cancun"
 
+[fuzz]
+runs = 4096
+
 [profile.default.invariant]
 runs = 1024
 depth = 32

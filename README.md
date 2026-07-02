@@ -1,45 +1,27 @@
-# Morpho Blue
+# LidoLend
 
-Morpho Blue is a noncustodial lending protocol implemented for the Ethereum Virtual Machine.
-Morpho Blue offers a new trustless primitive with increased efficiency and flexibility compared to existing lending platforms.
-It provides permissionless risk management and permissionless market creation with oracle agnostic pricing.
-It also enables higher collateralization factors, improved interest rates, and lower gas consumption.
-The protocol is designed to be a simple, immutable, and governance-minimized base layer that allows for a wide variety of other layers to be built on top.
-Morpho Blue also offers a convenient developer experience with a singleton implementation, callbacks, free flash loans, and account management features.
+LidoLend is the lending core of the Lido Lending product: a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs that keeps Morpho's isolated-market accounting and adds per-market controller hooks, a `settle` primitive, owner-gated market creation, and an upgradeable-proxy initializer.
 
-## This fork
+This repository holds the core contract with its interfaces, libraries, and tests. Contracts are not deployed from here: [`lidofinance/lido-lend-markets`](https://github.com/lidofinance/lido-lend-markets) imports this repository as a subrepository and owns deployment, the proxy, the market controllers, and the rest of the product.
 
-This repository (`morpho-lido-blue`) is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, adapted for the Lido Lending product and imported by the product repository as a subrepository.
-The core contract `src/Morpho.sol` is renamed to `src/LidoLend.sol` and extended with optional per-market controllers, controller action hooks, a settlement primitive (`settle`), and an upgradeable-proxy initializer.
-Unlike upstream, market creation is owner-gated in this fork (the description above applies to upstream Morpho Blue).
+## Documentation
 
-Inherited Morpho Blue source files are used under `GPL-2.0-or-later`.
-Lido Lending modifications, the exact upstream fork point, and the preserved/changed assumptions are documented in [`FORK_NOTES.md`](./FORK_NOTES.md).
+- [`SPECIFICATION.md`](./SPECIFICATION.md) — the normative specification of the fork's behavior, with the generated API reference.
+- [`FORK_NOTES.md`](./FORK_NOTES.md) — the fork record: the upstream pin, layout rules, the delta, and how to reproduce the diff.
+- [`TEST_PLAN.md`](./TEST_PLAN.md) — the property-to-test map and coverage.
+- [`morpho-blue-whitepaper.pdf`](./morpho-blue-whitepaper.pdf) — normative for the inherited Morpho Blue behavior.
 
-## Whitepaper
+## Repository structure
 
-The protocol is described in detail in the [Morpho Blue Whitepaper](./morpho-blue-whitepaper.pdf).
-
-## Repository Structure
-
-[`LidoLend.sol`](./src/LidoLend.sol) contains most of the source code of the forked core contract.
-It relies on internal libraries in the [`src/libraries`](./src/libraries) subdirectory; the fork-added errors and events are appended in place to `ErrorsLib` and `EventsLib`.
-The fork's typed interfaces are [`ILidoLend.sol`](./src/interfaces/ILidoLend.sol) (fork-added members) and [`ILidoLendMarketController.sol`](./src/interfaces/ILidoLendMarketController.sol); fork-behavior annotations on inherited members live in place in [`IMorpho.sol`](./src/interfaces/IMorpho.sol).
-
-Libraries in the [`src/libraries/periphery`](./src/libraries/periphery) directory are not used by Morpho Blue.
-They are useful helpers that integrators can reuse or adapt to their own needs.
-
-The [`src/mocks`](./src/mocks) directory contains contracts designed exclusively for testing.
-
-You'll find relevant comments in [`IMorpho.sol`](./src/interfaces/IMorpho.sol), notably a list of requirements about market dependencies.
+[`LidoLend.sol`](./src/LidoLend.sol) is the core — upstream `src/Morpho.sol`, renamed; every other inherited file keeps its upstream path. The fork's own interfaces are [`ILidoLend.sol`](./src/interfaces/ILidoLend.sol) and [`ILidoLendMarketController.sol`](./src/interfaces/ILidoLendMarketController.sol). [`src/libraries/periphery`](./src/libraries/periphery) holds helper libraries for integrators, and [`src/mocks`](./src/mocks) contracts designed exclusively for testing.
 
 ## Developers
 
-Compilation, testing and formatting with [forge](https://book.getfoundry.sh/getting-started/installation).
+Compilation, testing, and formatting with [forge](https://book.getfoundry.sh/getting-started/installation). `make doc` regenerates the API Reference section of `SPECIFICATION.md`.
 
 ## Audits
 
-All audits are stored in the [audits](./audits/) folder.
+The [audits](./audits/) folder contains the upstream Morpho Blue audits, covering the inherited code at the fork point. The fork's changes are not covered by them.
 
 ## Security
 

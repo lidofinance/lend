@@ -5,19 +5,18 @@ import {Id} from "../interfaces/IMorpho.sol";
 import {ILidoLendMarketController} from "../interfaces/ILidoLendMarketController.sol";
 
 /// @title ReentrantControllerMock
-/// @notice Adversarial controller for reentrancy tests: on its first hook dispatch it reenters the
-///         core with a preset call (`arm`), exercising the window where `_hook` runs before the
-///         calling function has written its state. Single-shot to avoid unbounded recursion; bubbles
-///         the reentrant revert so the test sees the real failure.
+/// @notice Adversarial controller that reenters the core from its hook with a preset call (`arm`),
+///         bubbling the reentrant revert so the test sees the real failure. Guarded against
+///         unbounded recursion should the core's lock fail.
 contract ReentrantControllerMock is ILidoLendMarketController {
-    bytes32 internal immutable _marketId;
+    Id internal immutable _marketId;
     address public immutable core;
 
     bytes public reentryCall;
     bool internal _entered;
 
     constructor(Id marketId_, address core_) {
-        _marketId = Id.unwrap(marketId_);
+        _marketId = marketId_;
         core = core_;
     }
 
@@ -26,19 +25,20 @@ contract ReentrantControllerMock is ILidoLendMarketController {
     }
 
     function marketId() external view returns (Id) {
-        return Id.wrap(_marketId);
+        return _marketId;
     }
 
-    /// @dev Accepts flash loans, so an armed `flashLoan` reentry is valid on its own (repayment
-    ///      is covered by the test's blanket approval).
+    /// @dev Accepts flash loans, so an armed `flashLoan` reentry is valid on its own (repayment is
+    ///      the caller's concern).
     function onMorphoFlashLoan(uint256, bytes calldata) external {}
 
     function on(Id, HookEvent, bytes calldata) external {
         if (reentryCall.length == 0 || _entered) return;
         _entered = true;
         (bool ok, bytes memory ret) = core.call(reentryCall);
+        _entered = false;
         if (!ok) {
-            assembly {
+            assembly ("memory-safe") {
                 revert(add(ret, 0x20), mload(ret))
             }
         }

@@ -126,6 +126,21 @@ contract MorphoStorageLibTest is BaseTest {
         vm.prank(OWNER);
         ILidoLend(address(morpho)).createMarket(cp, controller, true);
 
+        // Pin the layout literals: the fork slots append after the nine upstream slots, which must
+        // never move (see FORK_NOTES "Storage layout").
+        assertEq(MorphoStorageLib.OWNER_SLOT, 0);
+        assertEq(MorphoStorageLib.FEE_RECIPIENT_SLOT, 1);
+        assertEq(MorphoStorageLib.POSITION_SLOT, 2);
+        assertEq(MorphoStorageLib.MARKET_SLOT, 3);
+        assertEq(MorphoStorageLib.IS_IRM_ENABLED_SLOT, 4);
+        assertEq(MorphoStorageLib.IS_LLTV_ENABLED_SLOT, 5);
+        assertEq(MorphoStorageLib.IS_AUTHORIZED_SLOT, 6);
+        assertEq(MorphoStorageLib.NONCE_SLOT, 7);
+        assertEq(MorphoStorageLib.ID_TO_MARKET_PARAMS_SLOT, 8);
+        assertEq(MorphoStorageLib.MARKET_CONTROLLER_SLOT, 9);
+        assertEq(MorphoStorageLib.IS_SETTLEMENT_ENABLED_SLOT, 10);
+        assertEq(MorphoStorageLib.IS_INITIALIZED_SLOT, 11);
+
         bytes32[] memory slots = new bytes32[](3);
         slots[0] = MorphoStorageLib.marketControllerSlot(cid);
         slots[1] = MorphoStorageLib.isSettlementEnabledSlot(cid);

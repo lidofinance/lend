@@ -147,8 +147,6 @@ library EventsLib {
     /// @param feeShares The amount of shares minted as fee.
     event AccrueInterest(Id indexed id, uint256 prevBorrowRate, uint256 interest, uint256 feeShares);
 
-    /* FORK-ADDED EVENTS */
-
     /// @notice Emitted when a market's controller is bound at creation.
     /// @param id The market id.
     /// @param controller The bound controller.
@@ -163,15 +161,17 @@ library EventsLib {
     /// @param caller The caller of `settle`.
     /// @param onBehalf The supply-side account whose shares are burned.
     /// @param borrower The borrower whose debt and collateral are reduced.
+    /// @param receiver The address that received the seized collateral.
     /// @param supplySharesBurned The supply shares burned from `onBehalf`.
     /// @param borrowAssetsCanceled The borrow assets canceled from `borrower`.
     /// @param borrowSharesCanceled The borrow shares burned from `borrower`.
-    /// @param seizedAssets The collateral seized from `borrower` and sent to the receiver.
+    /// @param seizedAssets The collateral seized from `borrower` and sent to `receiver`.
     event Settle(
         Id indexed id,
         address caller,
         address indexed onBehalf,
         address indexed borrower,
+        address receiver,
         uint256 supplySharesBurned,
         uint256 borrowAssetsCanceled,
         uint256 borrowSharesCanceled,
