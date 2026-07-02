@@ -26,7 +26,10 @@ methods {
 
     function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => HAVOC_ECF;
 
-    function _.on(bytes32, uint8, bytes) external => HAVOC_ECF;
+    // NONDET is safe here: on() returns nothing, and this spec only reads currentContract storage and
+    // persistent ghosts, neither of which an external call can touch. HAVOC_ECF is equivalent for these
+    // rules but times out on liquidate.
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
