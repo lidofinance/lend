@@ -71,3 +71,18 @@ rule liquidateImprovePosition(env e, MorphoHarness.MarketParams marketParams, ad
     // Note that this is only shown for the case where there are still borrow positions on the markets.
     assert totalBorrowAssets(id) > 0 => newVirtualTotalShares * virtualTotalAssets >= newVirtualTotalAssets * virtualTotalShares;
 }
+
+// Fork: the borrower-side guarantee of settle. Unlike liquidate (which seizes the debt value times
+// LIF), settle is a par cut with no incentive: the value of the collateral seized never exceeds the
+// value of the debt canceled, in either anchor path (seizedAssets = mulDivDown(debtCanceled,
+// ORACLE_PRICE_SCALE, price) rounds against the settler). This is the machine-checked "no worse than
+// par" protection for the settled borrower; a boolean stayHealthy claim for the borrower does not
+// hold at wei granularity (the floor roundings can cost a borderline position one wei of headroom).
+// The third-party side is characterized in StayHealthy.spec.
+rule settleSeizesAtMostParCollateral(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
+    uint256 seizedAssets;
+    uint256 debtCanceled;
+    (seizedAssets, debtCanceled) = settle(e, marketParams, supplyShares, borrowShares, onBehalf, borrower, receiver);
+
+    assert seizedAssets * constantPrice <= debtCanceled * Util.oraclePriceScale();
+}

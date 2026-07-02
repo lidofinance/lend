@@ -140,10 +140,12 @@ rule liquidateWithoutBadDebtRealizationIncreasesSupplyExchangeRate(env e, Morpho
 // Check that except when not accruing interest, every function is decreasing the value of borrow shares.
 // The repay function is checked separately, see below.
 // The liquidate function is checked separately, see below.
-// Fork: settle is excluded. It cancels borrower debt, reducing totalBorrowAssets/Shares, but burns the
-// borrow shares with toSharesUp (rounded up), which can nudge the borrow exchange rate UP by a rounding
-// ULP — the standard adverse-to-user Morpho rounding. So, unlike repay/liquidate, settle does not admit
-// a clean "decreases" rule; the residual borrowers' per-share debt may rise marginally.
+// Fork: settle is excluded. Its supply-anchored path cancels borrower debt but burns the borrow shares
+// with toSharesUp (rounded up), which can nudge the borrow exchange rate UP by a rounding ULP — the
+// standard adverse-to-user Morpho rounding. (The borrow-anchored path burns the exact input share count
+// and values the canceled debt with toAssetsUp, which can only nudge the rate DOWN.) So, unlike
+// repay/liquidate, settle does not admit a clean "decreases" rule; the residual borrowers' per-share
+// debt may rise marginally.
 rule onlyAccrueInterestCanIncreaseBorrowExchangeRate(env e, method f, calldataarg args)
 filtered {
     f -> !f.isView &&
@@ -215,6 +217,31 @@ rule liquidateDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams mark
     mathint sharesAfter = virtualTotalBorrowShares(id);
 
     require assetsAfter != 1;
+
+    // Check that the exchange rate decreases: assetsBefore/sharesBefore >= assetsAfter/sharesAfter
+    assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore;
+}
+
+// Fork: borrow-anchored settle burns the exact input debt shares and cancels debt valued with
+// toAssetsUp, so the borrow exchange rate can only decrease — the residual borrowers owe at most the
+// same per share. This is the positive counterpart of excluding settle from
+// onlyAccrueInterestCanIncreaseBorrowExchangeRate above: the supply-anchored path is the one that can
+// nudge the rate up by a ULP; this path cannot.
+rule settleBorrowAnchoredDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketParams, uint256 borrowShares, address onBehalf, address borrower, address receiver)
+{
+    MorphoHarness.Id id = Util.libId(marketParams);
+    requireInvariant feeInRange(id);
+
+    mathint assetsBefore = virtualTotalBorrowAssets(id);
+    mathint sharesBefore = virtualTotalBorrowShares(id);
+
+    // Interest would increase borrow exchange rate, so we need to assume that no time passes.
+    require lastUpdate(id) == e.block.timestamp;
+
+    settle(e, marketParams, 0, borrowShares, onBehalf, borrower, receiver);
+
+    mathint assetsAfter = virtualTotalBorrowAssets(id);
+    mathint sharesAfter = virtualTotalBorrowShares(id);
 
     // Check that the exchange rate decreases: assetsBefore/sharesBefore >= assetsAfter/sharesAfter
     assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore;

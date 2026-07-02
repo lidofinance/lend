@@ -17,6 +17,7 @@ methods {
     function isAuthorized(address, address) external returns bool envfree;
     function nonce(address) external returns uint256 envfree;
     function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
+    function hookInProgress() external returns bool envfree;
     function supplyShares(MorphoHarness.Id, address) external returns uint256 envfree;
     function borrowShares(MorphoHarness.Id, address) external returns uint256 envfree;
     function collateral(MorphoHarness.Id, address) external returns uint256 envfree;
@@ -202,14 +203,14 @@ rule liquidateInputValidation(env e, MorphoHarness.MarketParams marketParams, ad
 }
 
 // Check that settle reverts when its inputs are not validated.
-// Fork entrypoint. Like withdraw, exactly one of supplyAssets/supplyShares must be non-zero, the
+// Fork entrypoint. Exactly one of supplyShares/borrowShares must be non-zero (the anchor choice), the
 // receiver must be non-zero, and the caller must be authorized for onBehalf. Two settle-specific
 // input gates: the market must exist and settlement must be enabled on it (the createMarket(.., true)
 // opt-in). Each is a require that must hold for success, so any of them failing forces a revert
-// regardless of their order. The deeper economic guards (borrower has debt, the slice fits the
-// borrower's collateral and debt, ordinary liquidity is exhausted) depend on accrual/oracle/share
-// math and are not characterized here.
-rule settleInputValidation(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+// regardless of their order. The deeper economic guards (the slice fits the borrower's collateral and
+// debt, ordinary liquidity is exhausted) depend on accrual/oracle/share math and are not
+// characterized here.
+rule settleInputValidation(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
     // Capture envfree getters before the @withrevert call; querying them afterwards would reset lastReverted.
     bool created = isCreated(id);
@@ -217,22 +218,27 @@ rule settleInputValidation(env e, MorphoHarness.MarketParams marketParams, uint2
     // Safe require because no one controls the zero address.
     require e.msg.sender != 0;
     requireInvariant zeroDoesNotAuthorize(e.msg.sender);
-    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
-    assert !created || !settlementEnabled || !exactlyOneZero(supplyAssets, supplyShares) || onBehalf == 0 || receiver == 0 => lastReverted;
+    settle@withrevert(e, marketParams, supplyShares, borrowShares, onBehalf, borrower, receiver);
+    assert !created || !settlementEnabled || !exactlyOneZero(supplyShares, borrowShares) || onBehalf == 0 || receiver == 0 => lastReverted;
 }
 
-// The next four rules characterize settle's economic guards (the ones beyond input validation), each as
-// a one-directional "condition => revert". They share two modeling assumptions so the resolved quantities
-// can be reconstructed exactly: the assets-input path (supplyShares == 0, which leaves debtCanceled ==
-// supplyAssets), and zero elapsed interest (lastUpdate == now, so _accrueInterest leaves the totals put).
+// The next rules characterize settle's economic guards (the ones beyond input validation), each as a
+// one-directional "condition => revert", split per anchor path so the resolved quantities can be
+// reconstructed exactly. They share the zero-elapsed-interest assumption (lastUpdate == now, so
+// _accrueInterest leaves the totals put). Per anchor, the debt canceled resolves to:
+//   supply-anchored (borrowShares == 0): debtCanceled = toAssetsDown(supplyShares, supply totals),
+//   borrow-anchored (supplyShares == 0): debtCanceled = toAssetsUp(borrowShares, borrow totals).
 
-// settle reverts (SETTLEMENT_NO_DEBT) when the targeted borrower has no debt — it is a soft liquidation
-// and only acts on indebted positions. borrowShares is untouched by interest accrual, so the pre-state
-// read is the value the guard sees; no other assumption is needed.
-rule settleNoDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+// settle reverts when the targeted borrower has no debt — it is a soft liquidation and only acts on
+// indebted positions. No dedicated error backs this: with zero debt shares, any positive cut trips
+// SETTLEMENT_EXCEEDS_DEBT (borrowSharesToBurn rounds up to >= 1 > 0) and a zero cut trips
+// SETTLEMENT_SLICE_TOO_SMALL (nothing to seize), in both anchor paths. borrowShares(borrower) is
+// untouched by interest accrual, so the pre-state read is the value the guards see; no other
+// assumption is needed.
+rule settleNoDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
     bool noDebt = borrowShares(id, borrower) == 0;
-    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    settle@withrevert(e, marketParams, supplyShares, borrowShares, onBehalf, borrower, receiver);
     assert noDebt => lastReverted;
 }
 
@@ -242,11 +248,11 @@ rule settleNoDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256
 // where _settleableSupply = max(0, onBehalfSupplyAssets - availableLiquidity),
 //   availableLiquidity   = zeroFloorSub(totalSupplyAssets, totalBorrowAssets),
 //   onBehalfSupplyAssets = toAssetsDown(supplyShares(onBehalf), totalSupplyAssets, totalSupplyShares).
-rule settleLiquidityAvailableReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+rule settleLiquidityAvailableRevertsSupplyAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
-    require supplyShares == 0;
     require lastUpdate(id) == e.block.timestamp;
 
+    uint256 debtCanceled = Util.libMulDivDown(supplyShares, virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
     mathint availableLiquidity = totalSupplyAssets(id) > totalBorrowAssets(id)
         ? to_mathint(totalSupplyAssets(id)) - to_mathint(totalBorrowAssets(id))
         : 0;
@@ -255,46 +261,94 @@ rule settleLiquidityAvailableReverts(env e, MorphoHarness.MarketParams marketPar
         ? to_mathint(onBehalfSupplyAssets) - availableLiquidity
         : 0;
 
-    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    settle@withrevert(e, marketParams, supplyShares, 0, onBehalf, borrower, receiver);
 
-    assert to_mathint(supplyAssets) > settleableSupply => lastReverted;
+    assert to_mathint(debtCanceled) > settleableSupply => lastReverted;
+}
+
+// Borrow-anchored twin of the rule above: debtCanceled = toAssetsUp(borrowShares, borrow totals).
+rule settleLiquidityAvailableRevertsBorrowAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require lastUpdate(id) == e.block.timestamp;
+
+    uint256 debtCanceled = Util.libMulDivUp(borrowShares, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
+    mathint availableLiquidity = totalSupplyAssets(id) > totalBorrowAssets(id)
+        ? to_mathint(totalSupplyAssets(id)) - to_mathint(totalBorrowAssets(id))
+        : 0;
+    uint256 onBehalfSupplyAssets = Util.libMulDivDown(supplyShares(id, onBehalf), virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    mathint settleableSupply = to_mathint(onBehalfSupplyAssets) > availableLiquidity
+        ? to_mathint(onBehalfSupplyAssets) - availableLiquidity
+        : 0;
+
+    settle@withrevert(e, marketParams, 0, borrowShares, onBehalf, borrower, receiver);
+
+    assert to_mathint(debtCanceled) > settleableSupply => lastReverted;
 }
 
 // settle reverts on the collateral cut: the seized collateral must be non-zero (SETTLEMENT_SLICE_TOO_SMALL)
 // and must fit the borrower's collateral (SETTLEMENT_EXCEEDS_COLLATERAL). collateralSeized =
 // mulDivDown(debtCanceled, ORACLE_PRICE_SCALE, price), reconstructed with the pinned constant price.
-rule settleCollateralCutReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+rule settleCollateralCutRevertsSupplyAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
-    require supplyShares == 0;
     require lastUpdate(id) == e.block.timestamp;
     // A zero price makes the contract's own mulDivDown revert; that sub-case is excluded, not characterized.
     require constantPrice != 0;
 
-    uint256 collateralSeized = Util.libMulDivDown(supplyAssets, Util.oraclePriceScale(), constantPrice);
+    uint256 debtCanceled = Util.libMulDivDown(supplyShares, virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    uint256 collateralSeized = Util.libMulDivDown(debtCanceled, Util.oraclePriceScale(), constantPrice);
     // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
     uint256 borrowerCollateral = collateral(id, borrower);
 
-    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    settle@withrevert(e, marketParams, supplyShares, 0, onBehalf, borrower, receiver);
+
+    assert collateralSeized == 0 => lastReverted;
+    assert to_mathint(collateralSeized) > to_mathint(borrowerCollateral) => lastReverted;
+}
+
+// Borrow-anchored twin of the rule above: debtCanceled = toAssetsUp(borrowShares, borrow totals).
+rule settleCollateralCutRevertsBorrowAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require lastUpdate(id) == e.block.timestamp;
+    // A zero price makes the contract's own mulDivDown revert; that sub-case is excluded, not characterized.
+    require constantPrice != 0;
+
+    uint256 debtCanceled = Util.libMulDivUp(borrowShares, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
+    uint256 collateralSeized = Util.libMulDivDown(debtCanceled, Util.oraclePriceScale(), constantPrice);
+    // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
+    uint256 borrowerCollateral = collateral(id, borrower);
+
+    settle@withrevert(e, marketParams, 0, borrowShares, onBehalf, borrower, receiver);
 
     assert collateralSeized == 0 => lastReverted;
     assert to_mathint(collateralSeized) > to_mathint(borrowerCollateral) => lastReverted;
 }
 
 // settle reverts (SETTLEMENT_EXCEEDS_DEBT) when the shares burned for the cut exceed the borrower's debt.
-// borrowSharesToBurn = toSharesUp(debtCanceled, totalBorrowAssets, totalBorrowShares)
-//                    = mulDivUp(supplyAssets, totalBorrowShares + VIRTUAL_SHARES, totalBorrowAssets + VIRTUAL_ASSETS).
-rule settleExceedsDebtReverts(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+// Supply-anchored: borrowSharesToBurn = toSharesUp(toAssetsDown(supplyShares, supply totals), borrow totals).
+rule settleExceedsDebtRevertsSupplyAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
-    require supplyShares == 0;
     require lastUpdate(id) == e.block.timestamp;
 
-    uint256 borrowSharesToBurn = Util.libMulDivUp(supplyAssets, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id));
+    uint256 debtCanceled = Util.libMulDivDown(supplyShares, virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    uint256 borrowSharesToBurn = Util.libMulDivUp(debtCanceled, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id));
     // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
     uint256 borrowerDebt = borrowShares(id, borrower);
 
-    settle@withrevert(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    settle@withrevert(e, marketParams, supplyShares, 0, onBehalf, borrower, receiver);
 
     assert to_mathint(borrowSharesToBurn) > to_mathint(borrowerDebt) => lastReverted;
+}
+
+// Borrow-anchored: the burned shares are the input itself, so the guard is direct — no accrual
+// assumption is needed (interest accrual touches neither the input nor the borrower's share balance).
+rule settleExceedsDebtRevertsBorrowAnchored(env e, MorphoHarness.MarketParams marketParams, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    // Capture before the @withrevert call; querying it afterwards would reset lastReverted.
+    uint256 borrowerDebt = borrowShares(id, borrower);
+
+    settle@withrevert(e, marketParams, 0, borrowShares, onBehalf, borrower, receiver);
+
+    assert to_mathint(borrowShares) > to_mathint(borrowerDebt) => lastReverted;
 }
 
 // Check that setAuthorizationWithSig reverts when its inputs are not validated.
@@ -309,4 +363,29 @@ rule accrueInterestInputValidation(env e, MorphoHarness.MarketParams marketParam
     bool wasCreated = isCreated(Util.libId(marketParams));
     accrueInterest@withrevert(e, marketParams);
     assert !wasCreated => lastReverted;
+}
+
+// Fork: the transient hook lock freezes every market action while a controller hook is in flight.
+// _hook() doubles as the reentrancy gate: it requires !_hookInProgress before dispatching, and every
+// market entrypoint (supply, withdraw, borrow, repay, supplyCollateral, withdrawCollateral, liquidate,
+// settle, accrueInterest) goes through it, so a controller reentering the core mid-hook always reverts
+// (HOOK_REENTRANCY) — including actions on markets with no controller. flashLoan, the authorization
+// entrypoints and the admin setters do not dispatch hooks and stay callable by design.
+rule hookLockFreezesMarketActions(env e, method f, calldataarg args) filtered {
+    f ->
+        f.selector == sig:supply(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector ||
+        f.selector == sig:withdraw(MorphoHarness.MarketParams, uint256, uint256, address, address).selector ||
+        f.selector == sig:borrow(MorphoHarness.MarketParams, uint256, uint256, address, address).selector ||
+        f.selector == sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector ||
+        f.selector == sig:supplyCollateral(MorphoHarness.MarketParams, uint256, address, bytes).selector ||
+        f.selector == sig:withdrawCollateral(MorphoHarness.MarketParams, uint256, address, address).selector ||
+        f.selector == sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector ||
+        f.selector == sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector ||
+        f.selector == sig:accrueInterest(MorphoHarness.MarketParams).selector
+} {
+    require hookInProgress();
+
+    f@withrevert(e, args);
+
+    assert lastReverted;
 }

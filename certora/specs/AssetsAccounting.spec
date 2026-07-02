@@ -138,11 +138,12 @@ rule withdrawCollateralAssetsAccounting(env e, MorphoHarness.MarketParams market
 }
 
 // Fork: settle cancels borrower debt against onBehalf's supply at par, with no incentive (SPECIFICATION
-// §Settlement). Characterize the accounting effect positively: the same debtCanceled value is removed
-// (zero-floored) from both totalSupplyAssets and totalBorrowAssets, the burned supply shares come
-// entirely from onBehalf, and the burned borrow shares come entirely from borrower. The collateral
-// side is characterized separately by settleOnlyReducesTargetedBorrowerCollateral in ConsistentState.
-rule settleAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) {
+// §Settlement). The anchor input (exactly one of supplyShares/borrowShares) only picks which side the
+// cut is derived from; either way the accounting effect is the same: one debtCanceled value is removed
+// from both totalSupplyAssets and totalBorrowAssets, the burned supply shares come entirely from
+// onBehalf, and the burned borrow shares come entirely from borrower. The collateral side is
+// characterized separately by settleOnlyReducesTargetedBorrowerCollateral in ConsistentState.
+rule settleAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint256 supplyShares, uint256 borrowShares, address onBehalf, address borrower, address receiver) {
     MorphoHarness.Id id = Util.libId(marketParams);
 
     // settle accrues interest first; assume it is already accrued (no elapsed time) so the totals move
@@ -157,15 +158,12 @@ rule settleAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint
     uint256 totalBorrowAssetsBefore = totalBorrowAssets(id);
 
     uint256 debtCanceled;
-    _, debtCanceled = settle(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    _, debtCanceled = settle(e, marketParams, supplyShares, borrowShares, onBehalf, borrower, receiver);
 
-    // Both asset totals fall by debtCanceled, zero-floored — equal value off each side (par, no incentive).
-    assert to_mathint(totalSupplyAssetsBefore) >= to_mathint(debtCanceled)
-        => to_mathint(totalSupplyAssets(id)) == to_mathint(totalSupplyAssetsBefore) - to_mathint(debtCanceled);
-    assert to_mathint(totalSupplyAssetsBefore) < to_mathint(debtCanceled) => totalSupplyAssets(id) == 0;
-    assert to_mathint(totalBorrowAssetsBefore) >= to_mathint(debtCanceled)
-        => to_mathint(totalBorrowAssets(id)) == to_mathint(totalBorrowAssetsBefore) - to_mathint(debtCanceled);
-    assert to_mathint(totalBorrowAssetsBefore) < to_mathint(debtCanceled) => totalBorrowAssets(id) == 0;
+    // Both asset totals fall by exactly debtCanceled — equal value off each side (par, no incentive).
+    // The subtractions are checked in the contract, so a cut deeper than either total reverts instead.
+    assert to_mathint(totalSupplyAssets(id)) == to_mathint(totalSupplyAssetsBefore) - to_mathint(debtCanceled);
+    assert to_mathint(totalBorrowAssets(id)) == to_mathint(totalBorrowAssetsBefore) - to_mathint(debtCanceled);
 
     // The burned supply shares are taken entirely from onBehalf; nothing else moves the supply total.
     assert to_mathint(supplySharesOnBehalfBefore) - to_mathint(supplyShares(id, onBehalf))
@@ -173,4 +171,19 @@ rule settleAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint
     // The burned borrow shares are taken entirely from borrower; nothing else moves the borrow total.
     assert to_mathint(borrowSharesBorrowerBefore) - to_mathint(borrowShares(id, borrower))
         == to_mathint(totalBorrowSharesBefore) - to_mathint(totalBorrowShares(id));
+}
+
+// Fork: the borrow-anchored input exists precisely to enable exact closure (SPECIFICATION §Settlement,
+// PR "two-anchor settle"): it burns the exact debt-share count passed in, so passing the borrower's
+// whole balance closes the position to zero — no residual wei of debt survives share-rounding, unlike
+// an assets- or supply-derived cut. No accrual assumption is needed: interest accrual changes the
+// totals, not the borrower's share balance, and the burn is share-denominated.
+rule settleBorrowAnchoredClosesPosition(env e, MorphoHarness.MarketParams marketParams, address onBehalf, address borrower, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+
+    uint256 debtShares = borrowShares(id, borrower);
+
+    settle(e, marketParams, 0, debtShares, onBehalf, borrower, receiver);
+
+    assert borrowShares(id, borrower) == 0;
 }

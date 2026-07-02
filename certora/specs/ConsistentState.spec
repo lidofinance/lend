@@ -145,7 +145,7 @@ invariant idleAmountLessThanBalance(address token)
             requireInvariant marketParamsOfHashOf(marketParams);
             require e.msg.sender != currentContract;
         }
-        preserved settle(MorphoHarness.MarketParams marketParams, uint256 supplyAssets, uint256 supplyShares, address onBehalf, address borrower, address receiver) with (env e) {
+        preserved settle(MorphoHarness.MarketParams marketParams, uint256 supplyShares, uint256 borrowShares, address onBehalf, address borrower, address receiver) with (env e) {
             requireInvariant marketParamsOfHashOf(marketParams);
             require e.msg.sender != currentContract;
         }
@@ -228,8 +228,8 @@ rule userCannotGainBorrowShares(env e, method f, calldataarg args) filtered { f 
 
 // Check that users cannot lose collateral by unauthorized parties except in case of a liquidation or a settlement.
 // Fork: settle is a bad-debt mechanism that, like liquidate, seizes collateral from an indebted borrower
-// (it requires borrowShares != 0) without that borrower's authorization, so it is excluded here too.
-// Users without outstanding debt remain protected by userWithoutBorrowCannotLoseCollateral.
+// without that borrower's authorization, so it is excluded here too. Users without outstanding debt
+// remain protected by userWithoutBorrowCannotLoseCollateral.
 rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataarg args) filtered { f -> !f.isView && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector } {
     MorphoHarness.Id id;
     address user;
@@ -275,8 +275,8 @@ rule userWithoutBorrowCannotLoseCollateral(env e, method f, calldataarg args) fi
 rule settleOnlyReducesTargetedBorrowerCollateral(
     env e,
     MorphoHarness.MarketParams marketParams,
-    uint256 supplyAssets,
     uint256 supplyShares,
+    uint256 borrowShares,
     address onBehalf,
     address borrower,
     address receiver
@@ -288,7 +288,7 @@ rule settleOnlyReducesTargetedBorrowerCollateral(
     uint256 collBefore = collateral(id, user);
     uint256 borrowerDebtBefore = borrowShares(settledId, borrower);
 
-    settle(e, marketParams, supplyAssets, supplyShares, onBehalf, borrower, receiver);
+    settle(e, marketParams, supplyShares, borrowShares, onBehalf, borrower, receiver);
 
     uint256 collAfter = collateral(id, user);
 
@@ -296,7 +296,8 @@ rule settleOnlyReducesTargetedBorrowerCollateral(
     assert (id != settledId || user != borrower) => collAfter == collBefore;
     // That collateral can only decrease, never increase.
     assert collAfter <= collBefore;
-    // And it can decrease only if the borrower actually had debt (settle requires borrowShares != 0).
+    // And it can decrease only if the borrower actually had debt: with zero debt shares, any positive
+    // cut trips SETTLEMENT_EXCEEDS_DEBT and a zero cut seizes nothing (SETTLEMENT_SLICE_TOO_SMALL).
     assert collAfter < collBefore => borrowerDebtBefore != 0;
 }
 

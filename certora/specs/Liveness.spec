@@ -15,11 +15,18 @@ methods {
     function lastUpdate(MorphoInternalAccess.Id) external returns uint256 envfree;
     function nonce(address) external returns uint256 envfree;
     function isAuthorized(address, address) external returns bool envfree;
-    function marketController(MorphoInternalAccess.Id) external returns address envfree;
     function hookInProgress() external returns bool envfree;
+    function isSettlementEnabled(MorphoInternalAccess.Id) external returns bool envfree;
+    function virtualTotalSupplyAssets(MorphoInternalAccess.Id) external returns uint256 envfree;
+    function virtualTotalSupplyShares(MorphoInternalAccess.Id) external returns uint256 envfree;
+    function virtualTotalBorrowAssets(MorphoInternalAccess.Id) external returns uint256 envfree;
+    function virtualTotalBorrowShares(MorphoInternalAccess.Id) external returns uint256 envfree;
 
     function Util.libId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
     function Util.refId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
+    function Util.libMulDivDown(uint256, uint256, uint256) external returns uint256 envfree;
+    function Util.libMulDivUp(uint256, uint256, uint256) external returns uint256 envfree;
+    function Util.oraclePriceScale() external returns uint256 envfree;
 
     function _._accrueInterest(MorphoInternalAccess.MarketParams memory marketParams, MorphoInternalAccess.Id id) internal with (env e) => summaryAccrueInterest(e, marketParams, id) expect void;
 
@@ -28,7 +35,13 @@ methods {
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
 
     function _.on(bytes32, uint8, bytes) external => NONDET;
+    // Pin the oracle price to a fixed value so the settle liveness preconditions (seized collateral)
+    // can be reconstructed exactly. A constant unconstrained ghost is a sound restriction of the
+    // previously unresolved (havoc'd) call for the pre-existing rules.
+    function _.price() external => constantPrice expect uint256;
 }
+
+persistent ghost uint256 constantPrice;
 
 persistent ghost mapping(address => mathint) balance {
     init_state axiom (forall address token. balance[token] == 0);
@@ -319,14 +332,12 @@ rule setAuthorizationWithSigChangesNonceAndAuthorizes(env e, MorphoInternalAcces
 }
 
 // Check that one can always repay the debt in full.
-// Fork scope: a market controller can veto any action through the on() hook, so unconditional
-// exit-liveness only holds for markets without a controller. With a controller, repayment is
-// subject to the controller's policy by design.
+// Fork scope: a market controller can veto any action through the on() hook. The hook is modeled as
+// non-reverting here (NONDET summary above), so for controller-bound markets this proves exit-liveness
+// modulo the controller's veto policy: whenever the hook lets the action through, the core itself
+// cannot block a full repay.
 rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, bytes data) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
-
-    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
-    require marketController(id) == 0;
 
     // The transient reentrancy lock is always clear at the start of a top-level call (transient
     // storage is zeroed per transaction); it is only set while a controller hook is executing.
@@ -360,12 +371,10 @@ rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 
 }
 
 // Check the one can always withdraw all, under the condition that there are no outstanding debt on the market.
-// Fork scope: only for markets without a controller, since the on() hook can veto a withdraw.
+// Fork scope: the on() hook is modeled as non-reverting, so this holds modulo the controller's veto
+// policy (see canRepayAll).
 rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
-
-    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
-    require marketController(id) == 0;
 
     // The transient reentrancy lock is always clear at the start of a top-level call (transient
     // storage is zeroed per transaction); it is only set while a controller hook is executing.
@@ -393,12 +402,10 @@ rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint2
 
 // Check that a user can always withdraw all, under the condition that this user does not have an outstanding debt.
 // Combined with the canRepayAll rule, this ensures that a borrower can always fully exit a market.
-// Fork scope: only for markets without a controller, since the on() hook can veto a withdrawCollateral.
+// Fork scope: the on() hook is modeled as non-reverting, so this holds modulo the controller's veto
+// policy (see canRepayAll).
 rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 assets, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
-
-    // The controller's on() hook could revert; the liveness guarantee is for uncontrolled markets.
-    require marketController(id) == 0;
 
     // The transient reentrancy lock is always clear at the start of a top-level call (transient
     // storage is zeroed per transaction); it is only set while a controller hook is executing.
@@ -417,6 +424,128 @@ rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketPar
     require borrowShares(id, e.msg.sender) == 0;
 
     withdrawCollateral@withrevert(e, marketParams, assets, e.msg.sender, receiver);
+
+    assert !lastReverted;
+}
+
+// Fork: liveness of settle, borrow-anchored. The economic-guard rules in Reverts.spec are
+// one-directional (condition => revert); this rule is the completeness direction: when every
+// documented precondition holds, settle succeeds. Like the exit rules above, the controller hook is
+// modeled as non-reverting, so the guarantee is modulo the controller's veto policy. Preconditions
+// mirror the contract's guards one-to-one; the "safe require" ones are implied by checked invariants
+// or by the guards themselves and are assumed explicitly only to keep the arithmetic tractable.
+rule canSettleBorrowAnchored(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address borrower, address receiver) {
+    MorphoInternalAccess.Id id = Util.libId(marketParams);
+
+    // The transient reentrancy lock is always clear at the start of a top-level call.
+    require !hookInProgress();
+
+    // Input validation gates.
+    require isCreated(id);
+    require isSettlementEnabled(id);
+    require e.msg.sender != 0;
+    require receiver != 0;
+    require e.msg.value == 0;
+    require shares > 0;
+
+    // Zero elapsed interest, so the guard quantities can be reconstructed exactly.
+    require lastUpdate(id) == e.block.timestamp;
+
+    // Safe requires because of the sum*SharesCorrect invariants.
+    require borrowShares(id, borrower) <= totalBorrowShares(id);
+    require supplyShares(id, e.msg.sender) <= totalSupplyShares(id);
+    // Assume that the invariant about tokens total supply is respected (kills overflow paths).
+    require totalSupplyAssets(id) < 10^35 && totalSupplyShares(id) < 10^35;
+    require totalBorrowAssets(id) < 10^35 && totalBorrowShares(id) < 10^35;
+
+    // The exceeds-debt guard: the exact share burn fits the borrower's debt.
+    require shares <= borrowShares(id, borrower);
+
+    uint256 debtCanceled = Util.libMulDivUp(shares, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
+
+    // The liquidity guard: the cut fits the settleable (illiquid) part of the caller's supply.
+    mathint availableLiquidity = totalSupplyAssets(id) > totalBorrowAssets(id)
+        ? to_mathint(totalSupplyAssets(id)) - to_mathint(totalBorrowAssets(id))
+        : 0;
+    uint256 onBehalfSupplyAssets = Util.libMulDivDown(supplyShares(id, e.msg.sender), virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    mathint settleableSupply = to_mathint(onBehalfSupplyAssets) > availableLiquidity
+        ? to_mathint(onBehalfSupplyAssets) - availableLiquidity
+        : 0;
+    require to_mathint(debtCanceled) <= settleableSupply;
+
+    // Safe require: implied by the liquidity guard (settleableSupply <= onBehalfSupplyAssets and
+    // toSharesUp(toAssetsDown(x)) <= x), assumed explicitly to keep the rule tractable.
+    require Util.libMulDivUp(debtCanceled, virtualTotalSupplyShares(id), virtualTotalSupplyAssets(id)) <= supplyShares(id, e.msg.sender);
+    // Safe require: implied by the liquidity guard (settleableSupply <= totalBorrowAssets since
+    // onBehalfSupplyAssets <= totalSupplyAssets), assumed explicitly for the same reason.
+    require debtCanceled <= totalBorrowAssets(id);
+
+    // The collateral-cut guards: the seized slice is non-empty and fits the borrower's collateral.
+    require constantPrice != 0;
+    uint256 seized = Util.libMulDivDown(debtCanceled, Util.oraclePriceScale(), constantPrice);
+    require seized != 0;
+    require seized <= collateral(id, borrower);
+
+    settle@withrevert(e, marketParams, 0, shares, e.msg.sender, borrower, receiver);
+
+    assert !lastReverted;
+}
+
+// Fork: liveness of settle, supply-anchored twin of the rule above. The anchor is the caller's own
+// supply-share burn; the debt canceled and the borrow-share burn are derived.
+rule canSettleSupplyAnchored(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address borrower, address receiver) {
+    MorphoInternalAccess.Id id = Util.libId(marketParams);
+
+    // The transient reentrancy lock is always clear at the start of a top-level call.
+    require !hookInProgress();
+
+    // Input validation gates.
+    require isCreated(id);
+    require isSettlementEnabled(id);
+    require e.msg.sender != 0;
+    require receiver != 0;
+    require e.msg.value == 0;
+    require shares > 0;
+
+    // Zero elapsed interest, so the guard quantities can be reconstructed exactly.
+    require lastUpdate(id) == e.block.timestamp;
+
+    // Safe requires because of the sum*SharesCorrect invariants.
+    require borrowShares(id, borrower) <= totalBorrowShares(id);
+    require supplyShares(id, e.msg.sender) <= totalSupplyShares(id);
+    // Assume that the invariant about tokens total supply is respected (kills overflow paths).
+    require totalSupplyAssets(id) < 10^35 && totalSupplyShares(id) < 10^35;
+    require totalBorrowAssets(id) < 10^35 && totalBorrowShares(id) < 10^35;
+
+    // The burned supply shares fit the caller's balance.
+    require shares <= supplyShares(id, e.msg.sender);
+
+    uint256 debtCanceled = Util.libMulDivDown(shares, virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+
+    // The exceeds-debt guard: the derived borrow-share burn fits the borrower's debt.
+    require Util.libMulDivUp(debtCanceled, virtualTotalBorrowShares(id), virtualTotalBorrowAssets(id)) <= borrowShares(id, borrower);
+
+    // The liquidity guard: the cut fits the settleable (illiquid) part of the caller's supply.
+    mathint availableLiquidity = totalSupplyAssets(id) > totalBorrowAssets(id)
+        ? to_mathint(totalSupplyAssets(id)) - to_mathint(totalBorrowAssets(id))
+        : 0;
+    uint256 onBehalfSupplyAssets = Util.libMulDivDown(supplyShares(id, e.msg.sender), virtualTotalSupplyAssets(id), virtualTotalSupplyShares(id));
+    mathint settleableSupply = to_mathint(onBehalfSupplyAssets) > availableLiquidity
+        ? to_mathint(onBehalfSupplyAssets) - availableLiquidity
+        : 0;
+    require to_mathint(debtCanceled) <= settleableSupply;
+
+    // Safe require: implied by the liquidity guard (settleableSupply <= totalBorrowAssets since
+    // onBehalfSupplyAssets <= totalSupplyAssets), assumed explicitly to keep the rule tractable.
+    require debtCanceled <= totalBorrowAssets(id);
+
+    // The collateral-cut guards: the seized slice is non-empty and fits the borrower's collateral.
+    require constantPrice != 0;
+    uint256 seized = Util.libMulDivDown(debtCanceled, Util.oraclePriceScale(), constantPrice);
+    require seized != 0;
+    require seized <= collateral(id, borrower);
+
+    settle@withrevert(e, marketParams, shares, 0, e.msg.sender, borrower, receiver);
 
     assert !lastReverted;
 }
