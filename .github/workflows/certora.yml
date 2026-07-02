@@ -5,6 +5,11 @@ on:
     branches:
       - main
   pull_request:
+    paths:
+      - "src/**"
+      - "certora/**"
+      - "lib/**"
+      - ".github/workflows/certora.yml"
   workflow_dispatch:
 
 jobs:

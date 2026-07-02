@@ -20,6 +20,8 @@ Coverage (`forge coverage --report summary --no-match-coverage "test|mocks"`) is
 
 Three revert branches upstream left untested (`setFee` / `setFeeRecipient` `ALREADY_SET`, `safeTransfer` on a reverting token) are closed by coverage-closure tests under the `LIDO FORK TESTS` separators in `OnlyOwnerIntegrationTest` and `SafeTransferLibTest`.
 
+The Certora specs (section 4) are the formal-verification layer on top of these tests: the inherited Morpho Blue properties re-proved against the fork, plus fork-specific rules for the hooks, the lock, and `settle`.
+
 ---
 
 ## 1. Controller hooks
@@ -169,6 +171,60 @@ Tests deploy through the `TestProxy` harness (`InitializeIntegrationTest`).
 | The shared proxy, initialized atomically through the constructor's initData (the production deployment path), cannot be re-initialized to seize ownership | `testCannotReinitializeProxy` |
 | The bare implementation deploys locked (`isInitialized`, no owner) and cannot be initialized directly | `testImplementationIsPetrified` |
 | The proxy and the implementation each derive the exact separator from their own address and the live `block.chainid`; after a simulated chain split the proxy's separator tracks the new id | `testDomainSeparatorBindsToAddressAndChainId` |
+
+---
+
+## 4. Formal verification (Certora specs)
+
+**What it is.** The Morpho Blue Certora specs, carried over and extended to the fork. Every parametric rule (`method f`) automatically quantifies over the fork's entrypoints — the controller `createMarket` overload, `settle`, and the hook dispatch inside every action — so the inherited properties double as fork regression proofs; fork-added rules are marked `Fork:` in the spec comments. Specs live in `certora/specs/`, one runner conf each in `certora/confs/`; CI runs the full matrix from `.github/workflows/certora.yml`. Two specs (`LibSummary`, `Transfer`) exist to validate the CVL summaries the others rely on.
+
+**`ConsistentState.spec` — global state consistency.**
+- Share accounting — `sumSupplySharesCorrect` / `sumBorrowSharesCorrect`: market totals equal the sum of per-user positions.
+- Solvency — `borrowLessThanSupply` (markets are independent); `idleAmountLessThanBalance`: the contract's token balance covers the summed obligations of all markets.
+- Market identity — `hashOfMarketParamsOf` / `marketParamsOfHashOf` / `libIdUnique` / `idToMarketParamsForCreatedMarketCannotChange`: id ↔ params is injective and frozen at creation; `onlyEnabledIrm` / `onlyEnabledLltv` / `lltvSmallerThanWad` / `irmCannotBeDisabled` / `lltvCannotBeDisabled`.
+- Unauthorized-access safety — `userCannotLoseSupplyShares`, `userCannotGainBorrowShares`, `userCannotLoseCollateralExceptLiquidateOrSettle`, `userWithoutBorrowCannotLoseCollateral` (no debt ⇒ collateral untouchable, **including** by `settle`), `onlyUserCanAuthorizeWithoutSig`, `nonceCannotDecrease`.
+- Fork — `settleOnlyReducesTargetedBorrowerCollateral`: a cut touches only the targeted borrower's collateral, only in the settled market, only downward, and only if the borrower had debt.
+- Timekeeping — `noTimeTravel` / `lastUpdateNonZero` / `lastUpdateCannotDecrease`; `feeInRange`.
+
+**`Health.spec` / `StayHealthy.spec` — position health.**
+- `healthyUserCannotLoseCollateral` — a healthy position cannot be cut by third parties (`settle` excluded by design: it has no core health gate; borrower protection is the controller's duty).
+- `alwaysCollateralized` — debt implies collateral (`settle` excluded by design: a cut may leave residual debt on empty collateral for a later liquidation to socialize).
+- `stayHealthy` — no interaction turns a healthy account unhealthy, with the liquidate case split to stay tractable (`stayHealthyLiquidate` / `...DifferentMarkets` / `...LastBorrow`).
+- Fork — the settle case, split the same way: `stayHealthySettleBorrowAnchored` / `...LastBorrow` / `stayHealthySettleDifferentMarkets` — a borrow-anchored cut cannot degrade any third party's health, and a cut on another market touches nothing. Deliberate non-claim: the supply-anchored path burns borrow shares rounded up, which can shift the pooled rate by one ULP and flip a borderline third-party position — the standard adverse-to-user Morpho rounding, documented in the spec instead of claimed.
+- `liquidateEquivalentInputDebtAndInputCollateral` — seized-input and shares-input liquidations resolve equivalently.
+
+**`ExchangeRate.spec` — share-price monotonicity.**
+- Supply side: `accrueInterestIncreasesSupplyExchangeRate`, `onlyLiquidateCanDecreaseSupplyExchangeRate` (`settle` **included** — a cut cannot hurt remaining suppliers), `liquidateWithoutBadDebtRealizationIncreasesSupplyExchangeRate`.
+- Borrow side: `accrueInterestIncreasesBorrowExchangeRate`, `onlyAccrueInterestCanIncreaseBorrowExchangeRate` (repay/liquidate/settle excluded), `repayDecreasesBorrowExchangeRate`, `liquidateDecreasesBorrowExchangeRate`.
+- Fork — `settleBorrowAnchoredDecreasesBorrowExchangeRate`: the borrow-anchored cut can only lower residual borrowers' per-share debt (the positive counterpart of settle's exclusion above; the supply-anchored path is the one that can nudge it up by a ULP).
+
+**`ExactMath.spec` — no-arbitrage under exact arithmetic.** `supplyWithdraw` and `borrowRepay` (no profit from a same-block round-trip), `repayAllResetsBorrowExchangeRate`.
+
+**`AssetsAccounting.spec` — per-action accounting.**
+- `supply/withdraw/borrow/repay-AssetsAccounting` — share↔asset conversion rounds in the protocol's favour on every action; `supplyCollateral/withdrawCollateral-AssetsAccounting` — collateral is 1:1.
+- Fork — `settleAssetsAccounting`: both asset totals fall by exactly `debtCanceled` (par, no incentive) and the burned shares come entirely from `onBehalf` / `borrower`; `settleBorrowAnchoredClosesPosition`: passing the borrower's whole debt-share balance closes the position to exactly zero.
+
+**`Liveness.spec` — executability and token conservation.**
+- `*ChangesTokensAndShares` (supply, withdraw, borrow, repay, supplyCollateral, withdrawCollateral, liquidate) — token balances, positions, and liquidity move consistently; `can*ByPassingShares` reachability checks; `setAuthorizationWithSigChangesNonceAndAuthorizes`.
+- Exit liveness — `canRepayAll` / `canWithdrawAll` / `canWithdrawCollateralAll`: a borrower/lender can always fully exit. The controller hook is modeled as non-reverting, so on controller-bound markets this holds modulo the controller's veto policy — the core itself never blocks an exit.
+- Fork — `canSettleBorrowAnchored` / `canSettleSupplyAnchored`: the completeness direction of settle's guards — when every documented precondition holds, the cut succeeds.
+
+**`Reverts.spec` — revert conditions.**
+- Input validation for every entrypoint (supply, withdraw, borrow, repay, supplyCollateral, withdrawCollateral, flashLoan, liquidate, accrueInterest, setFee, setFeeRecipient, setOwner, setAuthorizationWithSig, both `createMarket` overloads — including the fork's zero-controller and `marketId()`-mismatch gates — and `settle`).
+- Fork, settle economic guards (one-directional `condition ⇒ revert`, per anchor): `settleLiquidityAvailableReverts{Supply,Borrow}Anchored`, `settleCollateralCutReverts{Supply,Borrow}Anchored`, `settleExceedsDebtReverts{Supply,Borrow}Anchored`, plus `settleNoDebtReverts` (a debtless borrower cannot be settled — emergent from the exceeds-debt and slice-too-small guards).
+- Fork — `hookLockFreezesMarketActions`: while a controller hook is in flight, all nine hooked entrypoints revert `HOOK_REENTRANCY`; `flashLoan`, authorization, and admin setters stay callable by design.
+
+**`AccrueInterest.spec` — accrual ordering.** `supply/withdraw/borrow/repayAccruesInterest` (an explicit `accrueInterest` before the action is a no-op) and `accrueInterestCommutesExceptForSetFeeRecipient`.
+
+**`Reentrancy.spec` — call-pattern safety.** `reentrancySafe` (no storage→external-call→storage pattern; the IRM and controller-hook calls are the trusted exceptions — the hook's own protection is the lock, machine-checked in `Reverts.spec`) and `noDelegateCalls` (immutability).
+
+**`LiquidateBuffer.spec` — cut economics.**
+- `liquidateImprovePosition` — liquidating a position with LTV < 1/LIF improves its health.
+- Fork — `settleSeizesAtMostParCollateral`: the par guarantee for the settled borrower — the value of collateral seized never exceeds the value of debt canceled, in either anchor path (settle has no liquidation incentive). Deliberate non-claim: a boolean "settled borrower stays healthy" does not hold at wei granularity (two floor roundings can cost a borderline position one wei of headroom), documented in the spec.
+
+**`Transfer.spec` / `LibSummary.spec` — summary validation.** Functional correctness and revert conditions of the `safeTransfer` / `safeTransferFrom` summary; `mulDivUp` / `mulDivDown` rounding bounds, `id()` hashing, `min`.
+
+**Modeling caveats.** Controller hooks are arbitrary non-reverting external calls (`NONDET`/`HAVOC_ECF` per spec) — properties hold for *any* controller policy, but hook-veto liveness is out of model; most economic rules pin zero elapsed interest (`lastUpdate == now`) and, where reconstruction is needed, a constant oracle price. These assumptions are stated inline as `require`s in each rule.
 
 ---
 
