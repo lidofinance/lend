@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
 import {
     Id,
@@ -31,22 +31,20 @@ import {SharesMathLib} from "./libraries/SharesMathLib.sol";
 import {MarketParamsLib} from "./libraries/MarketParamsLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
 
-/// @title Morpho
-/// @author Morpho Labs
-/// @custom:contact security@morpho.org
-/// @notice The Morpho contract.
-contract Morpho is IMorphoStaticTyping {
+import {ILidoLendMarketController} from "./interfaces/ILidoLendMarketController.sol";
+import {ILidoLendBase, ILidoLendStaticTyping} from "./interfaces/ILidoLend.sol";
+
+/// @title LidoLend
+/// @author Morpho Labs. Modified by Lido.
+/// @notice The LidoLend contract: a Morpho Blue fork with per-market controller hooks and a `settle`
+///         primitive.
+contract LidoLend is ILidoLendStaticTyping {
     using MathLib for uint128;
     using MathLib for uint256;
     using UtilsLib for uint256;
     using SharesMathLib for uint256;
     using SafeTransferLib for IERC20;
     using MarketParamsLib for MarketParams;
-
-    /* IMMUTABLES */
-
-    /// @inheritdoc IMorphoBase
-    bytes32 public immutable DOMAIN_SEPARATOR;
 
     /* STORAGE */
 
@@ -68,16 +66,29 @@ contract Morpho is IMorphoStaticTyping {
     mapping(address => uint256) public nonce;
     /// @inheritdoc IMorphoStaticTyping
     mapping(Id => MarketParams) public idToMarketParams;
+    /// @inheritdoc ILidoLendBase
+    mapping(Id => address) public marketController;
+    /// @inheritdoc ILidoLendBase
+    mapping(Id => bool) public isSettlementEnabled;
+    /// @inheritdoc ILidoLendBase
+    bool public isInitialized;
 
-    /* CONSTRUCTOR */
+    /// @dev Reentrancy lock held while a controller hook executes.
+    bool internal transient _hookInProgress;
 
-    /// @param newOwner The new owner of the contract.
-    constructor(address newOwner) {
+    /* INITIALIZER */
+
+    /// @dev Locks the implementation contract when it is deployed, preventing it from being initialized.
+    constructor() {
+        isInitialized = true;
+    }
+
+    /// @inheritdoc ILidoLendBase
+    function initialize(address newOwner) external {
+        require(!isInitialized, ErrorsLib.ALREADY_INITIALIZED);
         require(newOwner != address(0), ErrorsLib.ZERO_ADDRESS);
-
-        DOMAIN_SEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+        isInitialized = true;
         owner = newOwner;
-
         emit EventsLib.SetOwner(newOwner);
     }
 
@@ -98,25 +109,6 @@ contract Morpho is IMorphoStaticTyping {
         owner = newOwner;
 
         emit EventsLib.SetOwner(newOwner);
-    }
-
-    /// @inheritdoc IMorphoBase
-    function enableIrm(address irm) external onlyOwner {
-        require(!isIrmEnabled[irm], ErrorsLib.ALREADY_SET);
-
-        isIrmEnabled[irm] = true;
-
-        emit EventsLib.EnableIrm(irm);
-    }
-
-    /// @inheritdoc IMorphoBase
-    function enableLltv(uint256 lltv) external onlyOwner {
-        require(!isLltvEnabled[lltv], ErrorsLib.ALREADY_SET);
-        require(lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
-
-        isLltvEnabled[lltv] = true;
-
-        emit EventsLib.EnableLltv(lltv);
     }
 
     /// @inheritdoc IMorphoBase
@@ -147,17 +139,59 @@ contract Morpho is IMorphoStaticTyping {
     /* MARKET CREATION */
 
     /// @inheritdoc IMorphoBase
-    function createMarket(MarketParams memory marketParams) external {
+    function createMarket(MarketParams memory marketParams) external onlyOwner {
+        _createMarket(marketParams, address(0), false);
+    }
+
+    /// @inheritdoc ILidoLendBase
+    function createMarket(MarketParams memory marketParams, address controller, bool enableSettlement)
+        external
+        onlyOwner
+    {
+        require(controller != address(0), ErrorsLib.ZERO_ADDRESS);
+        _createMarket(marketParams, controller, enableSettlement);
+    }
+
+    /// @dev Creates the market `marketParams`, binding `controller` and the settlement opt-in.
+    /// @dev Assumes that `enableSettlement` is true only when `controller` is non-zero: settlement
+    ///      cannot be enabled on a market without a controller.
+    function _createMarket(MarketParams memory marketParams, address controller, bool enableSettlement) internal {
         Id id = marketParams.id();
-        require(isIrmEnabled[marketParams.irm], ErrorsLib.IRM_NOT_ENABLED);
-        require(isLltvEnabled[marketParams.lltv], ErrorsLib.LLTV_NOT_ENABLED);
+        require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
+
+        // Emitted first, so the market's configuration events below follow its creation event. A
+        // revert further down (the controller check) rolls the event back with everything else.
+        emit EventsLib.CreateMarket(id, marketParams);
+
+        // The one external call (`marketId()`) runs before any state is written, so reentering from
+        // the controller cannot observe a half-created market.
+        if (controller != address(0)) {
+            require(
+                Id.unwrap(ILidoLendMarketController(controller).marketId()) == Id.unwrap(id),
+                ErrorsLib.CONTROLLER_MISMATCH
+            );
+            marketController[id] = controller;
+            emit EventsLib.SetMarketController(id, controller);
+
+            if (enableSettlement) {
+                isSettlementEnabled[id] = true;
+                emit EventsLib.EnableSettlement(id);
+            }
+        }
+
+        if (!isIrmEnabled[marketParams.irm]) {
+            isIrmEnabled[marketParams.irm] = true;
+            emit EventsLib.EnableIrm(marketParams.irm);
+        }
+        if (!isLltvEnabled[marketParams.lltv]) {
+            isLltvEnabled[marketParams.lltv] = true;
+            emit EventsLib.EnableLltv(marketParams.lltv);
+        }
 
         // Safe "unchecked" cast.
         market[id].lastUpdate = uint128(block.timestamp);
         idToMarketParams[id] = marketParams;
-
-        emit EventsLib.CreateMarket(id, marketParams);
 
         // Call to initialize the IRM in case it is stateful.
         if (marketParams.irm != address(0)) IIrm(marketParams.irm).borrowRate(marketParams, market[id]);
@@ -182,6 +216,16 @@ contract Morpho is IMorphoStaticTyping {
 
         if (assets > 0) shares = assets.toSharesDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         else assets = shares.toAssetsUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Supply,
+            abi.encode(
+                ILidoLendMarketController.SupplyHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
+                })
+            )
+        );
 
         position[id][onBehalf].supplyShares += shares;
         market[id].totalSupplyShares += shares.toUint128();
@@ -215,6 +259,16 @@ contract Morpho is IMorphoStaticTyping {
 
         if (assets > 0) shares = assets.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         else assets = shares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Withdraw,
+            abi.encode(
+                ILidoLendMarketController.WithdrawHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
+                })
+            )
+        );
 
         position[id][onBehalf].supplyShares -= shares;
         market[id].totalSupplyShares -= shares.toUint128();
@@ -251,6 +305,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         else assets = shares.toAssetsDown(market[id].totalBorrowAssets, market[id].totalBorrowShares);
 
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Borrow,
+            abi.encode(
+                ILidoLendMarketController.BorrowHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].borrowShares += shares.toUint128();
         market[id].totalBorrowShares += shares.toUint128();
         market[id].totalBorrowAssets += assets.toUint128();
@@ -283,6 +347,16 @@ contract Morpho is IMorphoStaticTyping {
         if (assets > 0) shares = assets.toSharesDown(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         else assets = shares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
 
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Repay,
+            abi.encode(
+                ILidoLendMarketController.RepayHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets, shares: shares
+                })
+            )
+        );
+
         position[id][onBehalf].borrowShares -= shares.toUint128();
         market[id].totalBorrowShares -= shares.toUint128();
         market[id].totalBorrowAssets = UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, assets).toUint128();
@@ -310,6 +384,16 @@ contract Morpho is IMorphoStaticTyping {
 
         // Don't accrue interest because it's not required and it saves gas.
 
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.SupplyCollateral,
+            abi.encode(
+                ILidoLendMarketController.SupplyCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, assets: assets
+                })
+            )
+        );
+
         position[id][onBehalf].collateral += assets.toUint128();
 
         emit EventsLib.SupplyCollateral(id, msg.sender, onBehalf, assets);
@@ -332,6 +416,16 @@ contract Morpho is IMorphoStaticTyping {
 
         _accrueInterest(marketParams, id);
 
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.WithdrawCollateral,
+            abi.encode(
+                ILidoLendMarketController.WithdrawCollateralHookData({
+                    caller: msg.sender, onBehalf: onBehalf, receiver: receiver, assets: assets
+                })
+            )
+        );
+
         position[id][onBehalf].collateral -= assets.toUint128();
 
         require(_isHealthy(marketParams, id, onBehalf), ErrorsLib.INSUFFICIENT_COLLATERAL);
@@ -339,6 +433,104 @@ contract Morpho is IMorphoStaticTyping {
         emit EventsLib.WithdrawCollateral(id, msg.sender, onBehalf, receiver, assets);
 
         IERC20(marketParams.collateralToken).safeTransfer(receiver, assets);
+    }
+
+    /* SETTLEMENT */
+
+    /// @inheritdoc ILidoLendBase
+    function settle(
+        MarketParams memory marketParams,
+        uint256 supplyShares,
+        uint256 borrowShares,
+        address onBehalf,
+        address borrower,
+        address receiver
+    )
+        external
+        returns (
+            uint256 seizedAssets,
+            uint256 borrowAssetsCanceled,
+            uint256 borrowSharesCanceled,
+            uint256 supplySharesBurned
+        )
+    {
+        Id id = marketParams.id();
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
+        require(UtilsLib.exactlyOneZero(supplyShares, borrowShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
+        require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
+
+        _accrueInterest(marketParams, id);
+
+        if (supplyShares > 0) {
+            // Supply-anchored: burn `onBehalf`'s exact supply shares, derive the rest. `toAssetsDown` cancels
+            // a hair LESS debt than that supply is worth (`onBehalf` eats the wei). `toSharesUp` burns a hair
+            // MORE borrow shares than par (remaining borrowers owe the wei).
+            supplySharesBurned = supplyShares;
+            borrowAssetsCanceled =
+                supplySharesBurned.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+            borrowSharesCanceled =
+                borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        } else {
+            // Borrow-anchored: burn the borrower's exact debt shares, derive the rest (whole holding closes
+            // to zero). `toAssetsUp` cancels a hair MORE debt than par (this borrower's collateral covers it, and
+            // others owe one wei less). `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
+            borrowSharesCanceled = borrowShares;
+            borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+            supplySharesBurned =
+                borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        }
+
+        require(borrowSharesCanceled <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
+
+        require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY);
+
+        uint256 collateralPrice = IOracle(marketParams.oracle).price();
+        seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        require(seizedAssets <= position[id][borrower].collateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Settle,
+            abi.encode(
+                ILidoLendMarketController.SettleHookData({
+                    caller: msg.sender,
+                    onBehalf: onBehalf,
+                    borrower: borrower,
+                    receiver: receiver,
+                    supplySharesBurned: supplySharesBurned,
+                    borrowAssetsCanceled: borrowAssetsCanceled,
+                    borrowSharesCanceled: borrowSharesCanceled,
+                    seizedAssets: seizedAssets
+                })
+            )
+        );
+
+        position[id][onBehalf].supplyShares -= supplySharesBurned;
+        market[id].totalSupplyShares -= supplySharesBurned.toUint128();
+        market[id].totalSupplyAssets -= borrowAssetsCanceled.toUint128();
+
+        position[id][borrower].borrowShares -= borrowSharesCanceled.toUint128();
+        market[id].totalBorrowShares -= borrowSharesCanceled.toUint128();
+        market[id].totalBorrowAssets -= borrowAssetsCanceled.toUint128();
+
+        position[id][borrower].collateral -= seizedAssets.toUint128();
+
+        emit EventsLib.Settle(
+            id,
+            msg.sender,
+            onBehalf,
+            borrower,
+            receiver,
+            supplySharesBurned,
+            borrowAssetsCanceled,
+            borrowSharesCanceled,
+            seizedAssets
+        );
+
+        IERC20(marketParams.collateralToken).safeTransfer(receiver, seizedAssets);
     }
 
     /* LIQUIDATION */
@@ -379,6 +571,20 @@ contract Morpho is IMorphoStaticTyping {
             }
         }
         uint256 repaidAssets = repaidShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.Liquidate,
+            abi.encode(
+                ILidoLendMarketController.LiquidateHookData({
+                    caller: msg.sender,
+                    borrower: borrower,
+                    seizedAssets: seizedAssets,
+                    repaidAssets: repaidAssets,
+                    repaidShares: repaidShares
+                })
+            )
+        );
 
         position[id][borrower].borrowShares -= repaidShares.toUint128();
         market[id].totalBorrowShares -= repaidShares.toUint128();
@@ -433,6 +639,11 @@ contract Morpho is IMorphoStaticTyping {
     /* AUTHORIZATION */
 
     /// @inheritdoc IMorphoBase
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+    }
+
+    /// @inheritdoc IMorphoBase
     function setAuthorization(address authorized, bool newIsAuthorized) external {
         require(newIsAuthorized != isAuthorized[msg.sender][authorized], ErrorsLib.ALREADY_SET);
 
@@ -448,7 +659,7 @@ contract Morpho is IMorphoStaticTyping {
         require(authorization.nonce == nonce[authorization.authorizer]++, ErrorsLib.INVALID_NONCE);
 
         bytes32 hashStruct = keccak256(abi.encode(AUTHORIZATION_TYPEHASH, authorization));
-        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR, hashStruct));
+        bytes32 digest = keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR(), hashStruct));
         address signatory = ecrecover(digest, signature.v, signature.r, signature.s);
 
         require(signatory != address(0) && authorization.authorizer == signatory, ErrorsLib.INVALID_SIGNATURE);
@@ -473,6 +684,12 @@ contract Morpho is IMorphoStaticTyping {
     function accrueInterest(MarketParams memory marketParams) external {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+
+        _hook(
+            id,
+            ILidoLendMarketController.HookEvent.AccrueInterest,
+            abi.encode(ILidoLendMarketController.AccrueInterestHookData({caller: msg.sender}))
+        );
 
         _accrueInterest(marketParams, id);
     }
@@ -534,6 +751,29 @@ contract Morpho is IMorphoStaticTyping {
             .wMulDown(marketParams.lltv);
 
         return maxBorrow >= borrowed;
+    }
+
+    /* CONTROLLER HELPERS */
+
+    /// @dev Reentrancy gate: while a hook is in flight, every hooked action reverts — including actions
+    ///      on markets with no controller.
+    function _hook(Id id, ILidoLendMarketController.HookEvent hookEvent, bytes memory data) internal {
+        require(!_hookInProgress, ErrorsLib.HOOK_REENTRANCY);
+        address controller = marketController[id];
+        if (controller != address(0)) {
+            _hookInProgress = true;
+            ILidoLendMarketController(controller).on(id, hookEvent, data);
+            _hookInProgress = false;
+        }
+    }
+
+    /// @dev The part of `onBehalf`'s supply position that would remain after withdrawing all of the
+    ///      market's available liquidity: the part that only a settle can close.
+    function _settleableSupply(Id id, address onBehalf) internal view returns (uint256) {
+        uint256 availableLiquidity = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, market[id].totalBorrowAssets);
+        uint256 onBehalfSupplyAssets = position[id][onBehalf].supplyShares
+        .toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+        return UtilsLib.zeroFloorSub(onBehalfSupplyAssets, availableLiquidity);
     }
 
     /* STORAGE VIEW */

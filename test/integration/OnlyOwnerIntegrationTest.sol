@@ -3,19 +3,26 @@ pragma solidity ^0.8.0;
 
 import "../BaseTest.sol";
 
+import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
+
 contract OnlyOwnerIntegrationTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
 
+    /* ============================== MORPHO UPSTREAM TESTS ============================== */
+    /* Inherited from morpho-org/morpho-blue @ 1478e9cf, adapted to the LidoLend core. */
+
     function testDeployWithAddressZero() public {
+        address morphoImpl = address(new LidoLend());
         vm.expectRevert(bytes(ErrorsLib.ZERO_ADDRESS));
-        new Morpho(address(0));
+        new TestProxy(morphoImpl, abi.encodeCall(LidoLend.initialize, (address(0))));
     }
 
     function testDeployEmitOwner() public {
+        address morphoImpl = address(new LidoLend());
         vm.expectEmit();
         emit EventsLib.SetOwner(OWNER);
-        new Morpho(OWNER);
+        new TestProxy(morphoImpl, abi.encodeCall(LidoLend.initialize, (OWNER)));
     }
 
     function testSetOwnerWhenNotOwner(address addressFuzz) public {
@@ -41,68 +48,6 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         morpho.setOwner(newOwner);
 
         assertEq(morpho.owner(), newOwner, "owner is not set");
-    }
-
-    function testEnableIrmWhenNotOwner(address addressFuzz, address irmFuzz) public {
-        vm.assume(addressFuzz != OWNER);
-        vm.assume(irmFuzz != address(irm));
-
-        vm.prank(addressFuzz);
-        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        morpho.enableIrm(irmFuzz);
-    }
-
-    function testEnableIrmAlreadySet() public {
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
-        morpho.enableIrm(address(irm));
-    }
-
-    function testEnableIrm(address irmFuzz) public {
-        vm.assume(!morpho.isIrmEnabled(irmFuzz));
-
-        vm.prank(OWNER);
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.EnableIrm(irmFuzz);
-        morpho.enableIrm(irmFuzz);
-
-        assertTrue(morpho.isIrmEnabled(irmFuzz), "IRM is not enabled");
-    }
-
-    function testEnableLltvWhenNotOwner(address addressFuzz, uint256 lltvFuzz) public {
-        vm.assume(addressFuzz != OWNER);
-        vm.assume(lltvFuzz != marketParams.lltv);
-
-        vm.prank(addressFuzz);
-        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
-        morpho.enableLltv(lltvFuzz);
-    }
-
-    function testEnableLltvAlreadySet() public {
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
-        morpho.enableLltv(marketParams.lltv);
-    }
-
-    function testEnableTooHighLltv(uint256 lltv) public {
-        lltv = bound(lltv, WAD, type(uint256).max);
-
-        vm.prank(OWNER);
-        vm.expectRevert(bytes(ErrorsLib.MAX_LLTV_EXCEEDED));
-        morpho.enableLltv(lltv);
-    }
-
-    function testEnableLltv(uint256 lltvFuzz) public {
-        lltvFuzz = _boundValidLltv(lltvFuzz);
-
-        vm.assume(!morpho.isLltvEnabled(lltvFuzz));
-
-        vm.prank(OWNER);
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.EnableLltv(lltvFuzz);
-        morpho.enableLltv(lltvFuzz);
-
-        assertTrue(morpho.isLltvEnabled(lltvFuzz), "LLTV is not enabled");
     }
 
     function testSetFeeWhenNotOwner(address addressFuzz, uint256 feeFuzz) public {
@@ -157,5 +102,41 @@ contract OnlyOwnerIntegrationTest is BaseTest {
         morpho.setFeeRecipient(newFeeRecipient);
 
         assertEq(morpho.feeRecipient(), newFeeRecipient);
+    }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Tests for fork-added behavior. */
+
+    function testCreateMarketWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz) public {
+        vm.assume(addressFuzz != OWNER);
+
+        vm.prank(addressFuzz);
+        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
+        morpho.createMarket(marketParamsFuzz);
+    }
+
+    function testCreateMarketWithControllerWhenNotOwner(address addressFuzz, MarketParams memory marketParamsFuzz)
+        public
+    {
+        vm.assume(addressFuzz != OWNER);
+
+        vm.prank(addressFuzz);
+        vm.expectRevert(bytes(ErrorsLib.NOT_OWNER));
+        ILidoLend(address(morpho)).createMarket(marketParamsFuzz, address(0), false);
+    }
+
+    /* Coverage closures for inherited `ALREADY_SET` guards upstream left untested. */
+
+    function testSetFeeAlreadySet() public {
+        uint256 currentFee = morpho.fee(id);
+        vm.prank(OWNER);
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
+        morpho.setFee(marketParams, currentFee);
+    }
+
+    function testSetFeeRecipientAlreadySet() public {
+        vm.prank(OWNER);
+        vm.expectRevert(bytes(ErrorsLib.ALREADY_SET));
+        morpho.setFeeRecipient(FEE_RECIPIENT);
     }
 }

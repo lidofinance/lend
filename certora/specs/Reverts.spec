@@ -71,22 +71,6 @@ rule setOwnerRevertCondition(env e, address newOwner) {
     assert lastReverted <=> e.msg.value != 0 || e.msg.sender != oldOwner || newOwner == oldOwner;
 }
 
-// Check the revert condition for the setOwner function.
-rule enableIrmRevertCondition(env e, address irm) {
-    address oldOwner = owner();
-    bool oldIsIrmEnabled = isIrmEnabled(irm);
-    enableIrm@withrevert(e, irm);
-    assert lastReverted <=> e.msg.value != 0 || e.msg.sender != oldOwner || oldIsIrmEnabled;
-}
-
-// Check the revert condition for the enableLltv function.
-rule enableLltvRevertCondition(env e, uint256 lltv) {
-    address oldOwner = owner();
-    bool oldIsLltvEnabled = isLltvEnabled(lltv);
-    enableLltv@withrevert(e, lltv);
-    assert lastReverted <=> e.msg.value != 0 || e.msg.sender != oldOwner || lltv >= Util.wad() || oldIsLltvEnabled;
-}
-
 // Check that setFee reverts when its inputs are not validated.
 // setFee can also revert if the accrueInterest reverts.
 rule setFeeInputValidation(env e, MorphoHarness.MarketParams marketParams, uint256 newFee) {

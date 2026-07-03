@@ -2,11 +2,15 @@
 libs = ["lib"]
 names = true
 sizes = true
-via_ir = true
+via_ir = false
 optimizer = true
-optimizer_runs = 999999
+optimizer_runs = 200
 bytecode_hash = "none"
-evm_version = "paris"
+solc = "0.8.35"
+evm_version = "cancun"
+
+[fuzz]
+runs = 4096
 
 [profile.default.invariant]
 runs = 1024

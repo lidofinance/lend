@@ -4,8 +4,7 @@ pragma solidity ^0.8.0;
 import {Id} from "../../interfaces/IMorpho.sol";
 
 /// @title MorphoStorageLib
-/// @author Morpho Labs
-/// @custom:contact security@morpho.org
+/// @author Morpho Labs. Modified by Lido.
 /// @notice Helper library exposing getters to access Morpho storage variables' slot.
 /// @dev This library is not used in Morpho itself and is intended to be used by integrators.
 library MorphoStorageLib {
@@ -20,6 +19,9 @@ library MorphoStorageLib {
     uint256 internal constant IS_AUTHORIZED_SLOT = 6;
     uint256 internal constant NONCE_SLOT = 7;
     uint256 internal constant ID_TO_MARKET_PARAMS_SLOT = 8;
+    uint256 internal constant MARKET_CONTROLLER_SLOT = 9;
+    uint256 internal constant IS_SETTLEMENT_ENABLED_SLOT = 10;
+    uint256 internal constant IS_INITIALIZED_SLOT = 11;
 
     /* SLOT OFFSETS */
 
@@ -106,5 +108,17 @@ library MorphoStorageLib {
 
     function idToLltvSlot(Id id) internal pure returns (bytes32) {
         return bytes32(uint256(keccak256(abi.encode(id, ID_TO_MARKET_PARAMS_SLOT))) + LLTV_OFFSET);
+    }
+
+    function marketControllerSlot(Id id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, MARKET_CONTROLLER_SLOT));
+    }
+
+    function isSettlementEnabledSlot(Id id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, IS_SETTLEMENT_ENABLED_SLOT));
+    }
+
+    function isInitializedSlot() internal pure returns (bytes32) {
+        return bytes32(IS_INITIALIZED_SLOT);
     }
 }

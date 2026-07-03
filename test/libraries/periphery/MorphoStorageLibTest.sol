@@ -3,6 +3,9 @@ pragma solidity ^0.8.0;
 
 import {MorphoStorageLib} from "../../../src/libraries/periphery/MorphoStorageLib.sol";
 import {SigUtils} from "../../helpers/SigUtils.sol";
+import {ControllerMock} from "../../../src/mocks/ControllerMock.sol";
+import {ILidoLend} from "../../../src/interfaces/ILidoLend.sol";
+import {LidoLend} from "../../../src/LidoLend.sol";
 
 import "../../BaseTest.sol";
 
@@ -10,6 +13,10 @@ contract MorphoStorageLibTest is BaseTest {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
+    using MarketParamsLib for MarketParams;
+
+    /* ============================== MORPHO UPSTREAM TESTS ============================== */
+    /* Inherited from morpho-org/morpho-blue @ 1478e9cf, adapted to the LidoLend core. */
 
     function testStorage(uint256 amountSupplied, uint256 amountBorrowed, uint256 timeElapsed, uint256 fee) public {
         // Prepare storage layout with non empty values.
@@ -100,5 +107,52 @@ contract MorphoStorageLibTest is BaseTest {
         assertEq(abi.decode(abi.encode(values[13]), (address)), expectedParams.oracle);
         assertEq(abi.decode(abi.encode(values[14]), (address)), expectedParams.irm);
         assertEq(uint256(values[15]), expectedParams.lltv);
+    }
+
+    /* ================================= LIDO FORK TESTS ================================= */
+    /* Tests for fork-added behavior. */
+
+    function testStorageForkSlots() public {
+        // Controller-bound, settlement-enabled market (irm == 0 gives an id distinct from the default).
+        MarketParams memory cp = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(0),
+            lltv: marketParams.lltv
+        });
+        Id cid = cp.id();
+        address controller = address(new ControllerMock(cid));
+        vm.prank(OWNER);
+        ILidoLend(address(morpho)).createMarket(cp, controller, true);
+
+        // Pin the layout literals: the fork slots append after the nine upstream slots, which must
+        // never move (see FORK_NOTES "Storage layout").
+        assertEq(MorphoStorageLib.OWNER_SLOT, 0);
+        assertEq(MorphoStorageLib.FEE_RECIPIENT_SLOT, 1);
+        assertEq(MorphoStorageLib.POSITION_SLOT, 2);
+        assertEq(MorphoStorageLib.MARKET_SLOT, 3);
+        assertEq(MorphoStorageLib.IS_IRM_ENABLED_SLOT, 4);
+        assertEq(MorphoStorageLib.IS_LLTV_ENABLED_SLOT, 5);
+        assertEq(MorphoStorageLib.IS_AUTHORIZED_SLOT, 6);
+        assertEq(MorphoStorageLib.NONCE_SLOT, 7);
+        assertEq(MorphoStorageLib.ID_TO_MARKET_PARAMS_SLOT, 8);
+        assertEq(MorphoStorageLib.MARKET_CONTROLLER_SLOT, 9);
+        assertEq(MorphoStorageLib.IS_SETTLEMENT_ENABLED_SLOT, 10);
+        assertEq(MorphoStorageLib.IS_INITIALIZED_SLOT, 11);
+
+        bytes32[] memory slots = new bytes32[](3);
+        slots[0] = MorphoStorageLib.marketControllerSlot(cid);
+        slots[1] = MorphoStorageLib.isSettlementEnabledSlot(cid);
+        slots[2] = MorphoStorageLib.isInitializedSlot();
+
+        bytes32[] memory values = morpho.extSloads(slots);
+
+        assertEq(abi.decode(abi.encode(values[0]), (address)), controller);
+        assertEq(abi.decode(abi.encode(values[0]), (address)), LidoLend(address(morpho)).marketController(cid));
+        assertEq(abi.decode(abi.encode(values[1]), (bool)), true);
+        assertEq(abi.decode(abi.encode(values[1]), (bool)), LidoLend(address(morpho)).isSettlementEnabled(cid));
+        assertEq(abi.decode(abi.encode(values[2]), (bool)), true);
+        assertEq(abi.decode(abi.encode(values[2]), (bool)), LidoLend(address(morpho)).isInitialized());
     }
 }
