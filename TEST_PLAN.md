@@ -103,6 +103,7 @@ Each cap has its own revert string, fuzzed across its whole over-cap window rath
 | Passing side: a seizure equal to the whole collateral succeeds, stripping it to zero while the debt stays open (only the controller can forbid that) | `testSettleSeizeExactlyAllCollateral` |
 | Passing side: the smallest non-zero seizure succeeds | `testSettleSliceSeizureBoundary` |
 | The gate's 1-wei edge: a sole borrower spanning the whole pool cannot be closed via `borrowShares` when the lender holds no surplus (the round-up overshoots settleable by exactly one wei); the supply-anchored exit still clears | `testSettleSoleBorrowerWholePoolBlockedByCap` |
+| The borrow-anchored round-up burn never underflows `onBehalf`'s supply shares: across drifted indexes, the largest admissible cut cancels exactly the settleable cap and burns within the position; one asset past the cap is a clean guard revert, not a panic | `testSettleBorrowAnchoredMaxCutBurnWithinSupplyFuzz` |
 
 ### Exact arithmetic (`SettleMathTest`)
 

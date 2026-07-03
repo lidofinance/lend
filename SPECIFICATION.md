@@ -692,7 +692,7 @@ function settle(
     address onBehalf,
     address borrower,
     address receiver
-) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled);
+) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled, uint256 borrowSharesCanceled, uint256 supplySharesBurned);
 ```
 
 **Parameters**
@@ -712,6 +712,8 @@ function settle(
 | --- | --- | --- |
 | `seizedAssets` | `uint256` | The amount of collateral seized and sent to `receiver`. |
 | `borrowAssetsCanceled` | `uint256` | The amount of debt canceled, in loan-token assets. |
+| `borrowSharesCanceled` | `uint256` | The count of `borrower`'s debt shares canceled. |
+| `supplySharesBurned` | `uint256` | The amount of `onBehalf`'s supply shares burned. |
 
 Cancels `borrower`'s debt against `onBehalf`'s supply shares and seizes the corresponding collateral to `receiver`.
 
@@ -802,7 +804,7 @@ function DOMAIN_SEPARATOR() public view returns (bytes32);
 The EIP-712 domain separator.
 
 > [!WARNING]
-> Every EIP-712 signed message based on this domain separator can be reused on chains sharing the same chain id and on forks because the domain separator would be the same.
+> Every EIP-712 signed message based on this domain separator can be reused on chains sharing the same chain id because the domain separator would be the same.
 
 The separator is recomputed on every call.
 

@@ -515,7 +515,7 @@ contract HooksIntegrationTest is BaseTestWithController {
         uint256 collateralBefore = morpho.collateral(liveId, BORROWER);
 
         uint256 cut = 30e18; // above the 20e18 free liquidity, within the 80e18 debt
-        (uint256 seized,) =
+        (uint256 seized,,,) =
             _lido().settle(liveParams, cut * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
 
         assertEq(

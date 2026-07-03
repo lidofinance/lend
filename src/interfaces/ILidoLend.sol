@@ -45,6 +45,8 @@ interface ILidoLendBase is IMorphoBase {
     /// @param receiver The address that will receive the seized collateral.
     /// @return seizedAssets The amount of collateral seized and sent to `receiver`.
     /// @return borrowAssetsCanceled The amount of debt canceled, in loan-token assets.
+    /// @return borrowSharesCanceled The count of `borrower`'s debt shares canceled.
+    /// @return supplySharesBurned The amount of `onBehalf`'s supply shares burned.
     function settle(
         MarketParams memory marketParams,
         uint256 supplyShares,
@@ -52,7 +54,14 @@ interface ILidoLendBase is IMorphoBase {
         address onBehalf,
         address borrower,
         address receiver
-    ) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled);
+    )
+        external
+        returns (
+            uint256 seizedAssets,
+            uint256 borrowAssetsCanceled,
+            uint256 borrowSharesCanceled,
+            uint256 supplySharesBurned
+        );
 
     /// @notice The controller of the market corresponding to `id`. Zero if the market has no controller.
     /// @dev Cannot be changed after market creation.

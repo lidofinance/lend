@@ -77,11 +77,11 @@ contract CreateMarketIntegrationTest is BaseTest {
         assertFalse(morpho.isIrmEnabled(marketParamsFuzz.irm), "fresh IRM already enabled");
 
         vm.expectEmit(true, true, true, true, address(morpho));
+        emit EventsLib.CreateMarket(marketParamsFuzz.id(), marketParamsFuzz);
+        vm.expectEmit(true, true, true, true, address(morpho));
         emit EventsLib.EnableIrm(marketParamsFuzz.irm);
         vm.expectEmit(true, true, true, true, address(morpho));
         emit EventsLib.EnableLltv(marketParamsFuzz.lltv);
-        vm.expectEmit(true, true, true, true, address(morpho));
-        emit EventsLib.CreateMarket(marketParamsFuzz.id(), marketParamsFuzz);
         vm.prank(OWNER);
         morpho.createMarket(marketParamsFuzz);
 

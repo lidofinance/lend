@@ -160,6 +160,12 @@ contract LidoLend is ILidoLendStaticTyping {
         require(marketParams.lltv < WAD, ErrorsLib.MAX_LLTV_EXCEEDED);
         require(market[id].lastUpdate == 0, ErrorsLib.MARKET_ALREADY_CREATED);
 
+        // Emitted first, so the market's configuration events below follow its creation event. A
+        // revert further down (the controller check) rolls the event back with everything else.
+        emit EventsLib.CreateMarket(id, marketParams);
+
+        // The one external call (`marketId()`) runs before any state is written, so reentering from
+        // the controller cannot observe a half-created market.
         if (controller != address(0)) {
             require(
                 Id.unwrap(ILidoLendMarketController(controller).marketId()) == Id.unwrap(id),
@@ -186,8 +192,6 @@ contract LidoLend is ILidoLendStaticTyping {
         // Safe "unchecked" cast.
         market[id].lastUpdate = uint128(block.timestamp);
         idToMarketParams[id] = marketParams;
-
-        emit EventsLib.CreateMarket(id, marketParams);
 
         // Call to initialize the IRM in case it is stateful.
         if (marketParams.irm != address(0)) IIrm(marketParams.irm).borrowRate(marketParams, market[id]);
@@ -441,7 +445,15 @@ contract LidoLend is ILidoLendStaticTyping {
         address onBehalf,
         address borrower,
         address receiver
-    ) external returns (uint256 seizedAssets, uint256 borrowAssetsCanceled) {
+    )
+        external
+        returns (
+            uint256 seizedAssets,
+            uint256 borrowAssetsCanceled,
+            uint256 borrowSharesCanceled,
+            uint256 supplySharesBurned
+        )
+    {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
@@ -451,12 +463,13 @@ contract LidoLend is ILidoLendStaticTyping {
 
         _accrueInterest(marketParams, id);
 
-        uint256 borrowSharesCanceled;
         if (supplyShares > 0) {
             // Supply-anchored: burn `onBehalf`'s exact supply shares, derive the rest. `toAssetsDown` cancels
             // a hair LESS debt than that supply is worth (`onBehalf` eats the wei). `toSharesUp` burns a hair
             // MORE borrow shares than par (remaining borrowers owe the wei).
-            borrowAssetsCanceled = supplyShares.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+            supplySharesBurned = supplyShares;
+            borrowAssetsCanceled =
+                supplySharesBurned.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
             borrowSharesCanceled =
                 borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
         } else {
@@ -465,7 +478,8 @@ contract LidoLend is ILidoLendStaticTyping {
             // others owe one wei less). `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
             borrowSharesCanceled = borrowShares;
             borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-            supplyShares = borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
+            supplySharesBurned =
+                borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
         }
 
         require(borrowSharesCanceled <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
@@ -486,7 +500,7 @@ contract LidoLend is ILidoLendStaticTyping {
                     onBehalf: onBehalf,
                     borrower: borrower,
                     receiver: receiver,
-                    supplySharesBurned: supplyShares,
+                    supplySharesBurned: supplySharesBurned,
                     borrowAssetsCanceled: borrowAssetsCanceled,
                     borrowSharesCanceled: borrowSharesCanceled,
                     seizedAssets: seizedAssets
@@ -494,8 +508,8 @@ contract LidoLend is ILidoLendStaticTyping {
             )
         );
 
-        position[id][onBehalf].supplyShares -= supplyShares;
-        market[id].totalSupplyShares -= supplyShares.toUint128();
+        position[id][onBehalf].supplyShares -= supplySharesBurned;
+        market[id].totalSupplyShares -= supplySharesBurned.toUint128();
         market[id].totalSupplyAssets -= borrowAssetsCanceled.toUint128();
 
         position[id][borrower].borrowShares -= borrowSharesCanceled.toUint128();
@@ -510,7 +524,7 @@ contract LidoLend is ILidoLendStaticTyping {
             onBehalf,
             borrower,
             receiver,
-            supplyShares,
+            supplySharesBurned,
             borrowAssetsCanceled,
             borrowSharesCanceled,
             seizedAssets

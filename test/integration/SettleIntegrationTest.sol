@@ -236,7 +236,7 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         uint256 lenderShares = morpho.supplyShares(id, address(this));
         uint256 slice = bound(sliceSeed, lenderShares / 4, (lenderShares * 3) / 4);
-        (uint256 seized, uint256 canceled) = _lido().settle(marketParams, slice, 0, address(this), BORROWER, RECEIVER);
+        (uint256 seized, uint256 canceled,,) = _lido().settle(marketParams, slice, 0, address(this), BORROWER, RECEIVER);
         assertEq(seized, _seizedFor(canceled), "seized the cancelled debt's worth");
         assertEq(morpho.collateral(id, BORROWER), collateral - seized, "borrower collateral debited by the seizure");
 
@@ -260,7 +260,7 @@ contract SettleIntegrationTest is BaseTestWithController {
         _openPosition(supplied, collateral, supplied); // sole lender, supply == borrow → free liquidity 0
 
         uint256 allShares = morpho.supplyShares(id, address(this));
-        (uint256 seized,) = _lido().settle(marketParams, allShares, 0, address(this), BORROWER, RECEIVER);
+        (uint256 seized,,,) = _lido().settle(marketParams, allShares, 0, address(this), BORROWER, RECEIVER);
 
         // Canceling the entire stake zeroes the market exactly.
         assertEq(seized, _seizedFor(supplied), "seized the whole supply's worth");
@@ -294,7 +294,7 @@ contract SettleIntegrationTest is BaseTestWithController {
 
         // onBehalf == borrower == address(this).
         uint256 slice = bound(sliceSeed, supplySharesBefore / 4, (supplySharesBefore * 3) / 4);
-        (uint256 seized, uint256 canceled) =
+        (uint256 seized, uint256 canceled,,) =
             _lido().settle(marketParams, slice, 0, address(this), address(this), RECEIVER);
         assertEq(seized, canceled.mulDivDown(ORACLE_PRICE_SCALE, oracle.price()), "seized the cancelled debt's worth");
 
@@ -374,10 +374,13 @@ contract SettleIntegrationTest is BaseTestWithController {
         emit EventsLib.Settle(
             id, address(this), address(this), BORROWER, RECEIVER, s.supplyBurn, s.canceled, s.held, s.seized
         );
-        (uint256 seized, uint256 canceled) = _lido().settle(marketParams, 0, s.held, address(this), BORROWER, RECEIVER);
+        (uint256 seized, uint256 canceled, uint256 sharesCanceled, uint256 sharesBurned) =
+            _lido().settle(marketParams, 0, s.held, address(this), BORROWER, RECEIVER);
 
         assertEq(canceled, s.canceled, "canceled == debt valued up");
         assertEq(seized, s.seized, "seized at the oracle price");
+        assertEq(sharesCanceled, s.held, "return borrowSharesCanceled == exact input");
+        assertEq(sharesBurned, s.supplyBurn, "return supplySharesBurned == derived burn");
         assertEq(morpho.borrowShares(id, BORROWER), 0, "borrower closed to zero");
         assertEq(s.lenderShares - morpho.supplyShares(id, address(this)), s.supplyBurn, "supply burn derived from cut");
         assertEq(s.totalSupplyShares - morpho.totalSupplyShares(id), s.supplyBurn, "total supply shares -= burn");
@@ -410,7 +413,7 @@ contract SettleIntegrationTest is BaseTestWithController {
         uint256 held = morpho.borrowShares(id, BORROWER);
         uint256 expectedCanceled = held.toAssetsUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
 
-        (uint256 seized, uint256 canceled) = _lido().settle(marketParams, 0, held, address(this), BORROWER, RECEIVER);
+        (uint256 seized, uint256 canceled,,) = _lido().settle(marketParams, 0, held, address(this), BORROWER, RECEIVER);
 
         assertEq(morpho.borrowShares(id, BORROWER), 0, "borrower closed to zero");
         assertEq(canceled, expectedCanceled, "canceled == debt valued up");

@@ -156,13 +156,15 @@ contract SettleInvariantTest is InvariantTest {
         });
 
         vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled) = borrowAnchored
+        (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesCanceled, uint256 sharesBurned) = borrowAnchored
             ? ILidoLend(address(morpho)).settle(cParams, 0, c.burn, LENDER, borrower, LENDER)
             : ILidoLend(address(morpho)).settle(cParams, c.sliceShares, 0, LENDER, borrower, LENDER);
 
         // Drift sentinel: the contract still computes what the mirror predicts.
         assertEq(collateralSeized, c.collateralSeized, "dlv: return collateralSeized");
         assertEq(debtCanceled, c.debtCanceled, "dlv: return debtCanceled");
+        assertEq(sharesCanceled, c.burn, "dlv: return borrowSharesCanceled");
+        assertEq(sharesBurned, c.sliceShares, "dlv: return supplySharesBurned");
 
         // Exact deltas, measured against the contract's own returned values.
         assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - c.sliceShares, "dlv: lender supplyShares");

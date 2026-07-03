@@ -51,7 +51,7 @@ struct Signature {
 interface IMorphoBase {
     /// @notice The EIP-712 domain separator.
     /// @dev Warning: Every EIP-712 signed message based on this domain separator can be reused on chains sharing the
-    /// same chain id and on forks because the domain separator would be the same.
+    /// same chain id because the domain separator would be the same.
     /// @dev The separator is recomputed on every call.
     function DOMAIN_SEPARATOR() external view returns (bytes32);
 
