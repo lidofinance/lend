@@ -31,8 +31,43 @@ methods {
     // rules but times out on liquidate.
     function _.on(bytes32, uint8, bytes) external => NONDET;
 
+    // Every rule in this spec is linear in the storage deltas the ghosts accumulate: the exact values
+    // of share/asset conversions and mulDiv chains never matter, only that the same value feeds the
+    // paired writes and transfers. The summaries below are therefore a sound over-approximation, and
+    // they remove the nonlinear arithmetic that times the liquidate case out. Rounding exactness is
+    // proved in ExactMath / AssetsAccounting / LibSummary instead. Two linear facts are kept, both
+    // true of the real functions: every conversion maps zero to zero, and the ceil-direction
+    // conversions map a positive input to a positive output (a debtless borrower stays unreachable:
+    // liquidate values zero shares to zero debt and reverts healthy, settle's positive cut rounds up
+    // to at least one debt share and trips the debt gate).
+    function SharesMathLib.toSharesUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => positivePreserving(a);
+    function SharesMathLib.toSharesDown(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
+    function SharesMathLib.toAssetsUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => positivePreserving(a);
+    function SharesMathLib.toAssetsDown(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.mulDivUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.mulDivDown(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.wDivUp(uint256 a, uint256 b) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.wDivDown(uint256 a, uint256 b) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.wMulDown(uint256 a, uint256 b) internal returns (uint256) => zeroPreserving(a);
+    function MathLib.wTaylorCompounded(uint256 a, uint256 b) internal returns (uint256) => zeroPreserving(a);
+
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
+}
+
+// x == 0 => 0: every summarized conversion maps zero to zero.
+function zeroPreserving(uint256 x) returns uint256 {
+    uint256 r;
+    require x == 0 => r == 0;
+    return r;
+}
+
+// Additionally x > 0 => r > 0: the ceil-direction conversions round a positive input up to >= 1.
+function positivePreserving(uint256 x) returns uint256 {
+    uint256 r;
+    require x == 0 => r == 0;
+    require x > 0 => r > 0;
+    return r;
 }
 
 persistent ghost mapping(MorphoHarness.Id => mathint) sumSupplyShares {
