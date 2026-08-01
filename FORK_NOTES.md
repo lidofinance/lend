@@ -34,9 +34,10 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 - Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `settle`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
   While any controller hook is executing, re-entering any hooked action reverts with `HOOK_REENTRANCY`. The lock is a single global flag checked in the dispatch, so this also blocks actions on a different market or one with no controller. A no-controller market is otherwise unaffected, since it dispatches no hook of its own.
   The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working. `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
-- `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares, capped at the part of the lender's supply that ordinary withdraw liquidity cannot serve.
+- `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares.
   The cut is anchored on either `supplyShares` (a set amount of the lender's supply) or `borrowShares` (an exact count of the borrower's debt, which can close a position to zero).
-  Enabled per market at creation.
+  The core enforces the exact accounting invariant that the derived `supplySharesBurned` cannot exceed the shares owned by `onBehalf`.
+  Settlement is enabled per market at creation and only for a market with a non-zero controller.
 
 ## Interfaces and libraries
 

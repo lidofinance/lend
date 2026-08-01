@@ -40,8 +40,7 @@ contract SettleIntegrationTest is BaseTestWithController {
     /* ACCESS CONTROL */
 
     // Every pre-derivation guard, in check order. Each guard reverts before any state is written, so a
-    // single live position covers them all. (The settleable-supply gate needs its own liquidity
-    // structure and lives in testSettleCannotCancelMoreThanOwned.)
+    // single live position covers them all.
     function testSettleGuardReverts() public {
         _openPosition(100e18, 200e18, 100e18);
 
@@ -84,19 +83,30 @@ contract SettleIntegrationTest is BaseTestWithController {
         _lido().settle(marketParams, halfSupply, 0, address(this), ONBEHALF, RECEIVER);
     }
 
-    // The lender's whole supply sits within free liquidity so its settleable supply is 0; the gate
-    // rejects any cut against it cleanly (no underflow), before the share subtraction. Fuzzed across
-    // the whole range that stays within BORROWER's 100e18 debt (the debt cap is checked first).
-    function testSettleCannotCancelMoreThanOwned(uint256 cutSeed) public {
+    // The lender's supply value equals all available free liquidity. The hook returns successfully, and
+    // the core accepts the cut because the lender owns the shares being burned.
+    function testSettleWhenSupplyEqualsFreeLiquidity() public {
         uint256 borrowed = 100e18;
         loanToken.setBalance(SUPPLIER, 100e18);
         vm.prank(SUPPLIER);
         morpho.supply(marketParams, 100e18, 0, SUPPLIER, hex"");
         _openPosition(10e18, 200e18, borrowed);
 
-        uint256 cut = bound(cutSeed, 1, borrowed);
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY));
-        _lido().settle(marketParams, cut * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
+        uint256 totalSupplyAssets = morpho.totalSupplyAssets(id);
+        uint256 totalSupplyShares = morpho.totalSupplyShares(id);
+        uint256 totalBorrowAssets = morpho.totalBorrowAssets(id);
+        uint256 sharesBefore = morpho.supplyShares(id, address(this));
+        uint256 suppliedAssets = sharesBefore.toAssetsDown(totalSupplyAssets, totalSupplyShares);
+        uint256 freeLiquidity = uint256(totalSupplyAssets) - totalBorrowAssets;
+        assertEq(suppliedAssets, freeLiquidity, "lender supply equals free liquidity");
+
+        uint256 requestedShares = sharesBefore / 2;
+        (,, uint256 supplySharesBurned,) =
+            _lido().settle(marketParams, requestedShares, 0, address(this), BORROWER, RECEIVER);
+
+        assertEq(supplySharesBurned, requestedShares, "returned supply shares");
+        assertLe(supplySharesBurned, sharesBefore, "burn within ownership");
+        assertEq(morpho.supplyShares(id, address(this)), sharesBefore - supplySharesBurned, "lender shares");
     }
 
     /* AUTHORIZATION */
@@ -305,8 +315,8 @@ contract SettleIntegrationTest is BaseTestWithController {
         assertEq(collateralToken.balanceOf(RECEIVER), seized, "receiver got the seized collateral");
     }
 
-    // With a non-enforcing controller, settlement leaves bad debt unrealized — preventing this is the
-    // controller's responsibility; the core has no in-core backstop (unlike `liquidate`).
+    // With this controller, settlement can leave bad debt unrealized because the core has no
+    // post-settlement solvency check (unlike `liquidate`).
     function testSettleBadDebtNotRealizedFuzz(
         uint256 collateral,
         uint256 borrowed,
@@ -347,14 +357,12 @@ contract SettleIntegrationTest is BaseTestWithController {
 
     /* BORROW-ANCHORED (closes the position to zero) */
 
-    // A second borrower soaks the rest of the liquidity, so the lender's settleable supply exceeds BORROWER's
-    // debt and the borrowShares anchor closes BORROWER to exactly zero. Asserts the borrow-anchored deltas,
-    // the Settle event, and the hook payload. (The sole-borrower-whole-pool case, where this cap blocks the
-    // close, is its own test in SettleMathTest.)
+    // A second borrower keeps the market at zero free liquidity while the borrowShares anchor closes BORROWER
+    // to exactly zero. Asserts the borrow-anchored deltas, the Settle event, and the hook payload.
     function testSettleBorrowAnchoredClosesToZero() public {
         _supply(100e18);
         _borrowAs(marketParams, BORROWER, 80e18, 60e18);
-        _borrowAs(marketParams, REPAYER, 60e18, 40e18); // free liquidity 0, settleable > BORROWER debt
+        _borrowAs(marketParams, REPAYER, 60e18, 40e18); // free liquidity 0
 
         CloseSnap memory s;
         s.held = morpho.borrowShares(id, BORROWER);
@@ -408,7 +416,7 @@ contract SettleIntegrationTest is BaseTestWithController {
         uint256 b1 = supplied / 2;
         _supply(supplied);
         _borrowAs(marketParams, BORROWER, 2 * supplied, b1);
-        _borrowAs(marketParams, REPAYER, 2 * supplied, supplied - b1); // free liquidity 0, settleable > BORROWER debt
+        _borrowAs(marketParams, REPAYER, 2 * supplied, supplied - b1); // free liquidity 0
 
         uint256 held = morpho.borrowShares(id, BORROWER);
         uint256 expectedCanceled = held.toAssetsUp(morpho.totalBorrowAssets(id), morpho.totalBorrowShares(id));
