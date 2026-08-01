@@ -19,6 +19,8 @@ methods {
     function isAuthorized(address, address) external returns (bool) envfree;
     function idToMarketParams_(MorphoHarness.Id) external returns (MorphoHarness.MarketParams) envfree;
     function nonce(address) external returns (uint256) envfree;
+    function marketController(MorphoHarness.Id) external returns (address) envfree;
+    function isSettlementEnabled(MorphoHarness.Id) external returns (bool) envfree;
 
     function Util.maxFee() external returns (uint256) envfree;
     function Util.wad() external returns (uint256) envfree;
@@ -183,6 +185,17 @@ invariant idleAmountLessThanBalance(address token)
             requireInvariant marketParamsOfHashOf(marketParams);
             require e.msg.sender != currentContract;
         }
+        preserved settle(
+            MorphoHarness.MarketParams marketParams,
+            uint256 supplySharesInput,
+            uint256 borrowSharesInput,
+            address onBehalf,
+            address borrower,
+            address receiver
+        ) with (env e) {
+            requireInvariant marketParamsOfHashOf(marketParams);
+            require e.msg.sender != currentContract;
+        }
     }
 
 // Check that a market can only exist if its LLTV is enabled.
@@ -195,6 +208,10 @@ invariant lltvSmallerThanWad(uint256 lltv)
 // Check that a market can only exist if its IRM is enabled.
 invariant onlyEnabledIrm(MorphoHarness.MarketParams marketParams)
     isCreated(Util.libId(marketParams)) => isIrmEnabled(marketParams.irm);
+
+// Settlement is only available on a market with a bound controller.
+invariant settlementRequiresController(MorphoHarness.Id id)
+    isSettlementEnabled(id) => marketController(id) != 0;
 
 // Check the pseudo-injectivity of the hashing function id().
 rule libIdUnique() {
@@ -260,8 +277,12 @@ rule userCannotGainBorrowShares(env e, method f, calldataarg args) filtered { f 
     assert sharesAfter <= sharesBefore;
 }
 
-// Check that users cannot lose collateral by unauthorized parties except in case of a liquidation.
-rule userCannotLoseCollateralExceptLiquidate(env e, method f, calldataarg args) filtered { f -> !f.isView && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector } {
+// Check that users cannot lose collateral by unauthorized parties except through liquidation or settlement.
+rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataarg args) filtered {
+    f -> !f.isView
+        && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+} {
     MorphoHarness.Id id;
     address user;
 
@@ -376,6 +397,27 @@ rule idToMarketParamsForCreatedMarketCannotChange(method f, env e, calldataarg a
 
     MorphoHarness.MarketParams itmpAfter = idToMarketParams_(id);
     assert itmpBefore == itmpAfter;
+}
+
+// Controller bindings and settlement opt-ins are immutable after market creation.
+rule marketControllerForCreatedMarketCannotChange(method f, env e, calldataarg args) filtered { f -> !f.isView } {
+    MorphoHarness.Id id;
+    require isCreated(id);
+    address controllerBefore = marketController(id);
+
+    f(e, args);
+
+    assert marketController(id) == controllerBefore;
+}
+
+rule settlementFlagForCreatedMarketCannotChange(method f, env e, calldataarg args) filtered { f -> !f.isView } {
+    MorphoHarness.Id id;
+    require isCreated(id);
+    bool enabledBefore = isSettlementEnabled(id);
+
+    f(e, args);
+
+    assert isSettlementEnabled(id) == enabledBefore;
 }
 
 rule nonceCannotDecrease(method f, env e, calldataarg args) filtered { f -> !f.isView } {

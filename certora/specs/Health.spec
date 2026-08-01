@@ -13,22 +13,38 @@ methods {
     function borrowShares(MorphoHarness.Id, address) external returns uint256 envfree;
     function collateral(MorphoHarness.Id, address) external returns uint256 envfree;
     function isAuthorized(address, address user) external returns bool envfree;
-    function lastUpdate(MorphoHarness.Id) external returns uint256 envfree;
+    function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
+    function marketController(MorphoHarness.Id) external returns address envfree;
+    function hookInProgress() external returns bool envfree;
+    function idToMarketParams_(MorphoHarness.Id) external returns MorphoHarness.MarketParams envfree;
 
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
+    function Util.wad() external returns uint256 envfree;
     function isHealthy(MorphoHarness.MarketParams, address user) external returns bool envfree;
 
-    function _.price() external => CONSTANT;
+    function _.price() external => oraclePrice expect uint256;
+    function _.on(bytes32, uint8, bytes) external => acceptControllerHook() expect void;
+    function SafeTransferLib.safeTransfer(address, address, uint256) internal => NONDET;
+    function SafeTransferLib.safeTransferFrom(address, address, address, uint256) internal => NONDET;
     function UtilsLib.min(uint256 a, uint256 b) internal returns uint256 => summaryMin(a, b);
 }
+
+persistent ghost uint256 oraclePrice;
+
+function acceptControllerHook() {}
 
 function summaryMin(uint256 a, uint256 b) returns uint256 {
     return a < b ? a : b;
 }
 
-// Check that users cannot lose collateral by unauthorized parties except in case of an unhealthy position.
+// A reverted call leaves collateral unchanged. Successful ordinary actions cannot reduce collateral
+// owned by an unrelated, unauthorized healthy user. Liquidation and settlement are checked separately.
 rule healthyUserCannotLoseCollateral(env e, method f, calldataarg data)
-filtered { f -> !f.isView }
+filtered {
+    f -> !f.isView
+        && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+}
 {
     MorphoHarness.MarketParams marketParams;
     MorphoHarness.Id id = Util.libId(marketParams);
@@ -37,37 +53,81 @@ filtered { f -> !f.isView }
     // Assume that the e.msg.sender is not authorized.
     require !isAuthorized(user, e.msg.sender);
     require user != e.msg.sender;
-    // Assumption to ensure that no interest is accumulated.
-    require lastUpdate(id) == e.block.timestamp;
-    // Assume that the user is healthy.
+    require e.msg.value == 0;
+    require !hookInProgress();
+    require lastUpdate(id) != 0 && lastUpdate(id) == e.block.timestamp;
+    require idToMarketParams_(id) == marketParams;
     require isHealthy(marketParams, user);
 
     uint256 collateralBefore = collateral(id, user);
 
-    f(e, data);
+    f@withrevert(e, data);
 
-    assert collateral(id, user) >= collateralBefore;
+    bool reverted = lastReverted;
+    uint256 collateralAfter = collateral(id, user);
+    assert reverted || collateralAfter >= collateralBefore;
 }
 
-// Check that users without collateral also have no debt.
-// This invariant ensures that bad debt realization cannot be bypassed.
-invariant alwaysCollateralized(MorphoHarness.Id id, address borrower)
-    borrowShares(id, borrower) != 0 => collateral(id, borrower) != 0;
-
-// Checks that passing a seized amount input to liquidate leads to repaid shares S and repaid amount A such that liquidating instead with shares S also repays the amount A.
-rule liquidateEquivalentInputDebtAndInputCollateral(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, bytes data) {
+// The health check executes before the controller hook and collateral mutation, so a healthy borrower
+// cannot be liquidated with either liquidation anchor.
+rule healthyUserCannotBeLiquidated(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address borrower,
+    uint256 seizedAssets,
+    uint256 repaidShares,
+    bytes data
+) {
     MorphoHarness.Id id = Util.libId(marketParams);
 
-    // Assume no interest accrual to ease the verification.
-    require lastUpdate(id) == e.block.timestamp;
+    require e.msg.value == 0;
+    require lastUpdate(id) != 0 && lastUpdate(id) == e.block.timestamp;
+    require idToMarketParams_(id) == marketParams;
+    require (seizedAssets == 0) != (repaidShares == 0);
+    require isHealthy(marketParams, borrower);
+
+    liquidate@withrevert(e, marketParams, borrower, seizedAssets, repaidShares, data);
+
+    assert lastReverted;
+}
+
+// Only a settlement-enabled market can contain residual debt after a successful cut removes all
+// collateral. Other LidoLend actions retain the stronger debt-implies-collateral property.
+invariant debtWithoutCollateralRequiresSettlementMarket(MorphoHarness.Id id, address borrower)
+    borrowShares(id, borrower) != 0 && collateral(id, borrower) == 0 => isSettlementEnabled(id);
+
+// Guard against accidentally making the invariant a tautology through a getter or storage-model summary.
+rule debtWithoutCollateralInvariantIsNontrivial(MorphoHarness.Id id, address borrower) {
+    satisfy borrowShares(id, borrower) != 0 && collateral(id, borrower) == 0 && !isSettlementEnabled(id);
+}
+
+// Checks that passing a seized amount input to liquidate leads to repaid shares S and repaid amount A such that liquidating instead with shares S also repays the amount A.
+rule liquidateEquivalentInputDebtAndInputCollateral(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address borrower,
+    uint256 seizedAssets,
+    bytes data
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+
+    // Isolate the two core liquidation formulas from hook behavior, callbacks and token behavior.
+    require e.msg.value == 0;
+    require !hookInProgress();
+    require marketController(id) == 0;
+    require lastUpdate(id) != 0 && lastUpdate(id) == e.block.timestamp;
+    require idToMarketParams_(id) == marketParams;
+    require marketParams.lltv < Util.wad();
+    require oraclePrice > 0;
+    require !isHealthy(marketParams, borrower);
+    require seizedAssets > 0 && seizedAssets < collateral(id, borrower);
+    require data.length == 0;
 
     storage init = lastStorage;
     uint256 sharesBefore = borrowShares(id, borrower);
 
     uint256 repaidAssets1;
     _, repaidAssets1 = liquidate(e, marketParams, borrower, seizedAssets, 0, data);
-    // Omit the bad debt realization case.
-    require collateral(id, borrower) != 0;
     uint256 sharesAfter = borrowShares(id, borrower);
     uint256 repaidShares1 = assert_uint256(sharesBefore - sharesAfter);
 

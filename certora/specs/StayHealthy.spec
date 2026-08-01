@@ -6,12 +6,13 @@ function mulDivUp(uint256 x, uint256 y, uint256 d) returns uint256 {
     return assert_uint256((x * y + (d - 1)) / d);
 }
 
-// Check that without accruing interest, no interaction can put an healthy account into an unhealthy one.
-// The liquidate function times out in this rule, but has been checked separately.
+// Check that without accruing interest, ordinary interactions cannot put a healthy account into an
+// unhealthy one. Liquidation and settlement have action-specific accounting and exchange-rate rules.
 rule stayHealthy(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView &&
-    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
 }
 {
     MorphoHarness.MarketParams marketParams;

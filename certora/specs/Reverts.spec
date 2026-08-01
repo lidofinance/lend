@@ -11,17 +11,30 @@ methods {
     function totalBorrowAssets(MorphoHarness.Id) external returns uint256 envfree;
     function totalSupplyShares(MorphoHarness.Id) external returns uint256 envfree;
     function totalBorrowShares(MorphoHarness.Id) external returns uint256 envfree;
+    function supplyShares(MorphoHarness.Id, address) external returns uint256 envfree;
+    function borrowShares(MorphoHarness.Id, address) external returns uint256 envfree;
+    function collateral(MorphoHarness.Id, address) external returns uint256 envfree;
     function lastUpdate(MorphoHarness.Id) external returns uint256 envfree;
     function isIrmEnabled(address) external returns bool envfree;
     function isLltvEnabled(uint256) external returns bool envfree;
     function isAuthorized(address, address) external returns bool envfree;
     function nonce(address) external returns uint256 envfree;
+    function marketController(MorphoHarness.Id) external returns address envfree;
+    function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
 
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
+    function Util.unwrapId(MorphoHarness.Id) external returns bytes32 envfree;
 
     function Util.maxFee() external returns uint256 envfree;
     function Util.wad() external returns uint256 envfree;
+
+    function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => NONDET;
+    function _.marketId() external => controllerMarketId expect bytes32;
+    function _.on(bytes32, uint8, bytes) external => NONDET;
+    function _.price() external => NONDET;
 }
+
+ghost bytes32 controllerMarketId;
 
 definition isCreated(MorphoHarness.Id id) returns bool =
     (lastUpdate(id) != 0);
@@ -90,14 +103,51 @@ rule setFeeRecipientRevertCondition(env e, address newFeeRecipient) {
     assert lastReverted <=> e.msg.value != 0 || e.msg.sender != oldOwner || newFeeRecipient == oldFeeRecipient;
 }
 
-// Check that createMarket reverts when its input are not validated.
+// Check that owner-gated plain market creation rejects invalid inputs.
 rule createMarketInputValidation(env e, MorphoHarness.MarketParams marketParams) {
     MorphoHarness.Id id = Util.libId(marketParams);
-    bool irmEnabled = isIrmEnabled(marketParams.irm);
-    bool lltvEnabled = isLltvEnabled(marketParams.lltv);
+    address oldOwner = owner();
     bool wasCreated = isCreated(id);
+    uint256 wad = Util.wad();
     createMarket@withrevert(e, marketParams);
-    assert e.msg.value != 0 || !irmEnabled || !lltvEnabled || wasCreated => lastReverted;
+    assert e.msg.value != 0 || e.msg.sender != oldOwner || marketParams.lltv >= wad || wasCreated
+        => lastReverted;
+}
+
+// Check that controlled market creation additionally requires a non-zero controller.
+rule createControlledMarketInputValidation(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address controller,
+    bool enableSettlement
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    address oldOwner = owner();
+    bool wasCreated = isCreated(id);
+    uint256 wad = Util.wad();
+    createMarket@withrevert(e, marketParams, controller, enableSettlement);
+    assert e.msg.value != 0 || e.msg.sender != oldOwner || controller == 0 || marketParams.lltv >= wad
+        || wasCreated => lastReverted;
+}
+
+// A controller can only be bound to the market id it declares.
+rule createControlledMarketRejectsControllerMismatch(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address controller,
+    bool enableSettlement
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require e.msg.value == 0;
+    require e.msg.sender == owner();
+    require controller != 0;
+    require marketParams.lltv < Util.wad();
+    require !isCreated(id);
+    require controllerMarketId != Util.unwrapId(id);
+
+    createMarket@withrevert(e, marketParams, controller, enableSettlement);
+
+    assert lastReverted;
 }
 
 // Check that supply reverts when its input are not validated.
@@ -169,4 +219,49 @@ rule accrueInterestInputValidation(env e, MorphoHarness.MarketParams marketParam
     bool wasCreated = isCreated(Util.libId(marketParams));
     accrueInterest@withrevert(e, marketParams);
     assert !wasCreated => lastReverted;
+}
+
+// Check the settlement mode, market, receiver, and authorization guards.
+rule settleInputValidation(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 supplySharesInput,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    bool authorized = e.msg.sender == onBehalf || isAuthorized(onBehalf, e.msg.sender);
+    bool wasCreated = isCreated(id);
+    bool settlementEnabled = isSettlementEnabled(id);
+
+    settle@withrevert(
+        e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver
+    );
+
+    assert e.msg.value != 0 || !wasCreated || !settlementEnabled
+        || !exactlyOneZero(supplySharesInput, borrowSharesInput) || receiver == 0 || !authorized
+        => lastReverted;
+}
+
+// With accrual already current, the supply anchor is the exact burn and ownership is checked without conversion.
+rule settleSupplyAnchorOwnership(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 supplySharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    uint256 updatedAt = lastUpdate(id);
+    uint256 ownedShares = supplyShares(id, onBehalf);
+
+    // Freeze accrual so fee-share minting cannot change ownership before the settle guard.
+    require updatedAt != 0 && updatedAt == e.block.timestamp;
+
+    settle@withrevert(e, marketParams, supplySharesInput, 0, onBehalf, borrower, receiver);
+
+    assert supplySharesInput > ownedShares => lastReverted;
 }

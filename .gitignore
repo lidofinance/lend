@@ -7,3 +7,8 @@ docs/
 
 # Certora
 .certora_internal/
+.certora_sources/
+.last_confs/
+emv-*/
+resource_errors.json
+certora_debug_log.txt
