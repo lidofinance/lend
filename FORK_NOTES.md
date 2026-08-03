@@ -59,7 +59,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 - Not drop-in on the admin surface: market creation is `onlyOwner`, `enableIrm` / `enableLltv` are gone ("enabled" now means "used by some created market", the allowlists remain enable-only).
 - Vault caveat: on a market with a controller, hooks may veto `supply`/`withdraw`. Product controllers must not break the vault flows they intend to serve.
 - The core is upgradeable: upstream's immutability-derived guarantees hold only as strongly as the proxy's upgrade governance, until the proxy is ossified.
-- Solidity is bumped to `0.8.35` with `evm_version = "cancun"` (pinned in `foundry.toml`, below solc 0.8.35's `osaka` default). The hook lock needs transient storage (EIP-1153), introduced in Cancun, so Cancun is the lowest EVM the fork can target.
+- Solidity is bumped to `0.8.36` with `evm_version = "cancun"` (pinned in `foundry.toml`, below solc 0.8.36's `osaka` default). The hook lock needs transient storage (EIP-1153), introduced in Cancun, so Cancun is the lowest EVM the fork can target.
 
 ## Tests and verification
 

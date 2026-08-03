@@ -188,7 +188,7 @@ Storage layout is append-only — under a proxy this is load-bearing:
 | 10 | `isSettlementEnabled` | fork |
 | 11 | `isInitialized` | fork |
 
-The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) needs an EVM at Cancun or later. The fork builds with `evm_version = "cancun"` and Solidity 0.8.35 (above upstream's 0.8.19), so the target chain must support Cancun. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib`.
+The layout is a single linear sequence from slot 0, and `OssifiableProxy` keeps its own implementation and admin pointers in EIP-1967 slots that do not collide with it, so the proxy never writes any of slots 0–11. New fields must be appended after `isInitialized`, never inserted. The hook-reentrancy lock is transient storage and occupies no slot. Transient storage (EIP-1153) needs an EVM at Cancun or later. The fork builds with `evm_version = "cancun"` and Solidity 0.8.36 (above upstream's 0.8.19), so the target chain must support Cancun. Fork-added revert strings and events are appended in place to the upstream `ErrorsLib` and `EventsLib`.
 
 ## Trust Assumptions
 
