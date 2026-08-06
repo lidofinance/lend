@@ -484,7 +484,7 @@ contract LidoLend is ILidoLendStaticTyping {
 
         require(borrowSharesCanceled <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
 
-        require(borrowAssetsCanceled <= _settleableSupply(id, onBehalf), ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY);
+        require(supplySharesBurned <= position[id][onBehalf].supplyShares, ErrorsLib.SETTLEMENT_EXCEEDS_SUPPLY);
 
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
@@ -765,15 +765,6 @@ contract LidoLend is ILidoLendStaticTyping {
             ILidoLendMarketController(controller).on(id, hookEvent, data);
             _hookInProgress = false;
         }
-    }
-
-    /// @dev The part of `onBehalf`'s supply position that would remain after withdrawing all of the
-    ///      market's available liquidity: the part that only a settle can close.
-    function _settleableSupply(Id id, address onBehalf) internal view returns (uint256) {
-        uint256 availableLiquidity = UtilsLib.zeroFloorSub(market[id].totalSupplyAssets, market[id].totalBorrowAssets);
-        uint256 onBehalfSupplyAssets = position[id][onBehalf].supplyShares
-        .toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        return UtilsLib.zeroFloorSub(onBehalfSupplyAssets, availableLiquidity);
     }
 
     /* STORAGE VIEW */

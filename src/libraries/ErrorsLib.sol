@@ -77,9 +77,8 @@ library ErrorsLib {
     /// @notice Thrown when `settle` is called on a market that did not opt into it.
     string internal constant SETTLEMENT_DISABLED = "settlement disabled";
 
-    /// @notice Thrown when the settlement slice exceeds the part of the supply that available liquidity cannot
-    /// serve.
-    string internal constant SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY = "settlement exceeds settleable supply";
+    /// @notice Thrown when settlement would burn more supply shares than `onBehalf` owns.
+    string internal constant SETTLEMENT_EXCEEDS_SUPPLY = "settlement exceeds supply";
 
     /// @notice Thrown when the settlement slice is too small to seize any collateral (rounds to zero).
     string internal constant SETTLEMENT_SLICE_TOO_SMALL = "settlement slice too small";

@@ -22,7 +22,8 @@ methods {
     function MathLib.wTaylorCompounded(uint256, uint256) internal returns uint256 => NONDET;
 
     function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => HAVOC_ECF;
-
+    function _.on(bytes32, uint8, bytes) external => NONDET;
+    function _.price() external => NONDET;
 }
 
 invariant feeInRange(MorphoHarness.Id id)
@@ -142,7 +143,8 @@ rule onlyAccrueInterestCanIncreaseBorrowExchangeRate(env e, method f, calldataar
 filtered {
     f -> !f.isView &&
     f.selector != sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector &&
-    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+    f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
 }
 {
     MorphoHarness.Id id;
@@ -189,6 +191,66 @@ rule repayDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketPa
     assert assetsAfter == assetsBefore - repaidAssets;
     // Check that the exchange rate decreases: assetsBefore/sharesBefore >= assetsAfter/sharesAfter
     assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore;
+}
+
+// Supply anchoring removes supply assets rounded down and borrow shares rounded up. Both remaining
+// share classes therefore retain or gain value.
+rule settleSupplyAnchorIncreasesExchangeRates(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 supplySharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require lastUpdate(id) == e.block.timestamp;
+    require e.msg.sender == onBehalf;
+
+    mathint supplyAssetsBefore = virtualTotalSupplyAssets(id);
+    mathint supplySharesBefore = virtualTotalSupplyShares(id);
+    mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
+    mathint borrowSharesBefore = virtualTotalBorrowShares(id);
+
+    settle(e, marketParams, supplySharesInput, 0, onBehalf, borrower, receiver);
+
+    mathint supplyAssetsAfter = virtualTotalSupplyAssets(id);
+    mathint supplySharesAfter = virtualTotalSupplyShares(id);
+    mathint borrowAssetsAfter = virtualTotalBorrowAssets(id);
+    mathint borrowSharesAfter = virtualTotalBorrowShares(id);
+
+    assert supplyAssetsBefore * supplySharesAfter <= supplyAssetsAfter * supplySharesBefore;
+    assert borrowAssetsBefore * borrowSharesAfter <= borrowAssetsAfter * borrowSharesBefore;
+}
+
+// Borrow anchoring removes borrow assets rounded up against an exact debt-share burn, so the remaining
+// borrow shares retain or lose value. Its rounded-up supply burn increases the supply exchange rate.
+rule settleBorrowAnchorExchangeRates(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require lastUpdate(id) == e.block.timestamp;
+    require e.msg.sender == onBehalf;
+
+    mathint supplyAssetsBefore = virtualTotalSupplyAssets(id);
+    mathint supplySharesBefore = virtualTotalSupplyShares(id);
+    mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
+    mathint borrowSharesBefore = virtualTotalBorrowShares(id);
+
+    settle(e, marketParams, 0, borrowSharesInput, onBehalf, borrower, receiver);
+
+    mathint supplyAssetsAfter = virtualTotalSupplyAssets(id);
+    mathint supplySharesAfter = virtualTotalSupplyShares(id);
+    mathint borrowAssetsAfter = virtualTotalBorrowAssets(id);
+    mathint borrowSharesAfter = virtualTotalBorrowShares(id);
+
+    assert supplyAssetsBefore * supplySharesAfter <= supplyAssetsAfter * supplySharesBefore;
+    assert borrowAssetsBefore * borrowSharesAfter >= borrowAssetsAfter * borrowSharesBefore;
 }
 
 rule liquidateDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, uint256 repaidShares, bytes data)

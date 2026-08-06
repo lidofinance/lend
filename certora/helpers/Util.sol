@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.35;
 
 import {Id, MarketParams, MarketParamsLib} from "../../src/libraries/MarketParamsLib.sol";
 import "../../src/libraries/MathLib.sol";
+import "../../src/libraries/SharesMathLib.sol";
 import "../../src/libraries/ConstantsLib.sol";
 import "../../src/libraries/UtilsLib.sol";
 
@@ -35,6 +36,10 @@ contract Util {
         marketParamsId = Id.wrap(keccak256(abi.encode(marketParams)));
     }
 
+    function unwrapId(Id id) external pure returns (bytes32) {
+        return Id.unwrap(id);
+    }
+
     function libMulDivUp(uint256 x, uint256 y, uint256 d) external pure returns (uint256) {
         return MathLib.mulDivUp(x, y, d);
     }
@@ -45,5 +50,17 @@ contract Util {
 
     function libMin(uint256 x, uint256 y) external pure returns (uint256) {
         return UtilsLib.min(x, y);
+    }
+
+    function toSharesUp(uint256 assets, uint256 totalAssets, uint256 totalShares) external pure returns (uint256) {
+        return SharesMathLib.toSharesUp(assets, totalAssets, totalShares);
+    }
+
+    function toAssetsUp(uint256 shares, uint256 totalAssets, uint256 totalShares) external pure returns (uint256) {
+        return SharesMathLib.toAssetsUp(shares, totalAssets, totalShares);
+    }
+
+    function toAssetsDown(uint256 shares, uint256 totalAssets, uint256 totalShares) external pure returns (uint256) {
+        return SharesMathLib.toAssetsDown(shares, totalAssets, totalShares);
     }
 }

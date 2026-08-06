@@ -19,6 +19,8 @@ methods {
     function Util.libMulDivDown(uint256, uint256, uint256) external returns uint256 envfree;
     function Util.libMulDivUp(uint256, uint256, uint256) external returns uint256 envfree;
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
+
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
 function expectedSupplyAssets(MorphoHarness.Id id, address user) returns uint256 {

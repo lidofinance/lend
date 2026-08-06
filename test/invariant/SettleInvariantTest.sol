@@ -6,19 +6,17 @@ import "../InvariantTest.sol";
 import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
 import {EnforcingControllerMock} from "../../src/mocks/EnforcingControllerMock.sol";
 import {OracleMock} from "../../src/mocks/OracleMock.sol";
-import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 // Invariant suite for `settle` on one controller-bound market with two borrowers. The market is kept
-// near zero free liquidity (LENDER supplies, a borrower borrows the same) so the liquidity gate clears;
-// `warp` lets interest compound the share/asset rate far from 1:1; `setControllerPrice` swings health so a
-// borrower can go underwater. The controller enforces post-cut solvency — the bad-debt backstop a production
-// controller must provide. `settleNoRevert` asserts the exact post-state of every successful
-// cut against the contract's *returned* values plus an independent collateral-value-conservation bound, so
-// it catches a wrong formula and not just a regressed one. A companion `settleCloseNoRevert` fires the same
-// cut borrow-anchored — passing a borrower's debt shares (the whole holding closes it to zero) — through the
-// same assertions, so the borrow anchor's up/up rounding is stressed under drift too. Deterministic tests
-// cover the branches fuzzing reaches rarely: the controller blocking an insolvent cut, and the gate blocking
-// a cut while liquidity exists.
+// near zero free liquidity (LENDER supplies, a borrower borrows the same); `warp` lets interest compound
+// the share/asset rate far from 1:1; `setControllerPrice` swings health so a borrower can go underwater.
+// This suite's controller rejects cuts that would leave the borrower insolvent. `settleNoRevert` asserts
+// the exact post-state of every successful cut against the contract's *returned* values plus an independent
+// collateral-value-conservation bound, so it catches a wrong formula and not just a regressed one. A
+// companion `settleCloseNoRevert` fires the same cut borrow-anchored — passing a borrower's debt shares (the
+// whole holding closes it to zero) — through the same assertions, so the borrow anchor's up/up rounding is
+// stressed under drift too. Deterministic tests cover the branches fuzzing reaches rarely: a hook rejecting
+// an insolvent cut and a successful cut independent of free liquidity.
 //
 // Out of scope (covered elsewhere): caller != onBehalf authorization (integration tests).
 contract SettleInvariantTest is InvariantTest {
@@ -165,10 +163,11 @@ contract SettleInvariantTest is InvariantTest {
         assertEq(debtCanceled, c.debtCanceled, "dlv: return debtCanceled");
         assertEq(sharesCanceled, c.burn, "dlv: return borrowSharesCanceled");
         assertEq(sharesBurned, c.sliceShares, "dlv: return supplySharesBurned");
+        assertLe(sharesBurned, b.lenderSupplyShares, "dlv: burn within lender ownership");
 
         // Exact deltas, measured against the contract's own returned values.
-        assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - c.sliceShares, "dlv: lender supplyShares");
-        assertEq(morpho.totalSupplyShares(cId), b.totalSupplyShares - c.sliceShares, "dlv: totalSupplyShares");
+        assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - sharesBurned, "dlv: lender supplyShares");
+        assertEq(morpho.totalSupplyShares(cId), b.totalSupplyShares - sharesBurned, "dlv: totalSupplyShares");
         assertEq(morpho.totalSupplyAssets(cId), b.totalSupplyAssets - debtCanceled, "dlv: totalSupplyAssets");
         assertEq(morpho.borrowShares(cId, borrower), b.borrowerBorrowShares - c.burn, "dlv: borrower borrowShares");
         assertEq(morpho.totalBorrowShares(cId), b.totalBorrowShares - c.burn, "dlv: totalBorrowShares");
@@ -209,7 +208,6 @@ contract SettleInvariantTest is InvariantTest {
 
         c.sliceShares = bound(sliceSeed, 1, lenderShares);
         c.debtCanceled = c.sliceShares.toAssetsDown(tSA, tSS);
-        if (c.debtCanceled <= (tSA > tBA ? tSA - tBA : 0)) return c; // liquidity gate
 
         uint256 price = cOracle.price();
         uint256 collateral = morpho.collateral(cId, borrower);
@@ -228,9 +226,8 @@ contract SettleInvariantTest is InvariantTest {
     }
 
     // Borrow-anchored mirror: `c.burn` is the exact debt-share input (the whole holding => close to zero), the
-    // debt is valued up, and the supply burn (`c.sliceShares`) is derived. Mirrors every core pre-hook check —
-    // including the settleable cap with supply valued DOWN, the gate that blocks a sole-borrower full close —
-    // and the controller's solvency check, so callers know whether the cut succeeds.
+    // debt is valued up, and the supply burn (`c.sliceShares`) is derived. Mirrors every core pre-hook check,
+    // including exact supply-share ownership, and the controller's solvency check.
     function _findCloseCut(address borrower, uint256 sliceSeed) internal view returns (Cut memory c) {
         uint256 lenderShares = morpho.supplyShares(cId, LENDER);
         uint256 borrowerShares = morpho.borrowShares(cId, borrower);
@@ -243,20 +240,13 @@ contract SettleInvariantTest is InvariantTest {
 
         c.burn = bound(sliceSeed, 1, borrowerShares); // EXCEEDS_DEBT: burn <= the holding
         c.debtCanceled = c.burn.toAssetsUp(tBA, tBS);
-
-        // Settleable cap: debtCanceled <= supply valued DOWN minus free liquidity. The up/down split is exactly
-        // what blocks a sole-borrower full close, so a too-large close is reported as not-ok (would revert).
-        uint256 settleable = lenderShares.toAssetsDown(tSA, tSS);
-        uint256 freeLiquidity = tSA > tBA ? tSA - tBA : 0;
-        settleable = settleable > freeLiquidity ? settleable - freeLiquidity : 0;
-        if (c.debtCanceled > settleable) return c;
+        c.sliceShares = c.debtCanceled.toSharesUp(tSA, tSS);
+        if (c.sliceShares > lenderShares) return c;
 
         uint256 price = cOracle.price();
         uint256 collateral = morpho.collateral(cId, borrower);
         c.collateralSeized = c.debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, price);
         if (c.collateralSeized == 0 || c.collateralSeized > collateral) return c;
-
-        c.sliceShares = c.debtCanceled.toSharesUp(tSA, tSS); // derived supply burn (<= lenderShares by the cap)
 
         // Replicate EnforcingControllerMock.on exactly (same reads, same rounding).
         uint256 postDebt = (borrowerShares - c.burn).toAssetsUp(tBA - c.debtCanceled, tBS - c.burn);
@@ -366,24 +356,28 @@ contract SettleInvariantTest is InvariantTest {
         ILidoLend(address(morpho)).settle(cParams, c.sliceShares, 0, LENDER, CB, LENDER);
     }
 
-    // A settle may cancel at most the lender's own illiquid supply (supply − free liquidity); any larger
-    // slice while free liquidity exists is rejected by the gate, across the whole over-cap window.
-    function testSettleBlockedAboveSettleableSupply(uint256 fracSeed) public {
+    // This solvent cut exceeds the lender's supply beyond free liquidity, but succeeds when the hook returns
+    // because the shares being burned are owned.
+    function testSettleBeyondFreeLiquidity(uint256 fracSeed) public {
         uint256 borrowAmount = MAX_TEST_AMOUNT / 8;
         loanToken.setBalance(LENDER, 2 * borrowAmount);
         vm.prank(LENDER);
-        // free liquidity = borrowAmount; settleable = supply - free liquidity = borrowAmount
         morpho.supply(cParams, 2 * borrowAmount, 0, LENDER, hex"");
         vm.prank(CB);
         morpho.borrow(cParams, borrowAmount, 0, CB, CB);
 
-        // CB's total debt is the setUp seed (MAX/10) plus borrowAmount (MAX/8) = 1.8 * borrowAmount. A slice
-        // in (50%, 90%] of the 2*borrowAmount stake cancels within (settleable, debt]: it clears the debt cap
-        // (checked first) and is rejected by the gate.
         uint256 sliceShares = morpho.supplyShares(cId, LENDER) * bound(fracSeed, 51, 90) / 100;
-        vm.prank(LENDER);
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY));
-        ILidoLend(address(morpho)).settle(cParams, sliceShares, 0, LENDER, CB, LENDER);
+        Cut memory c = _findCut(CB, sliceShares);
+
+        uint256 suppliedAssets =
+            morpho.supplyShares(cId, LENDER).toAssetsDown(morpho.totalSupplyAssets(cId), morpho.totalSupplyShares(cId));
+        uint256 freeLiquidity = morpho.totalSupplyAssets(cId) - morpho.totalBorrowAssets(cId);
+        assertGe(suppliedAssets, freeLiquidity, "setup: supply covers free liquidity");
+        uint256 supplyBeyondFreeLiquidity = suppliedAssets - freeLiquidity;
+
+        assertTrue(c.ok && !c.insolvent, "setup: expected accepted cut");
+        assertGt(c.debtCanceled, supplyBeyondFreeLiquidity, "setup: cut exceeds supply beyond free liquidity");
+        _executeAndAssertCut(CB, c);
     }
 
     /* INVARIANTS */

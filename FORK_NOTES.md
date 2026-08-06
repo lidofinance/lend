@@ -34,9 +34,10 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
 - Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `settle`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
   While any controller hook is executing, re-entering any hooked action reverts with `HOOK_REENTRANCY`. The lock is a single global flag checked in the dispatch, so this also blocks actions on a different market or one with no controller. A no-controller market is otherwise unaffected, since it dispatches no hook of its own.
   The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working. `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
-- `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares, capped at the part of the lender's supply that ordinary withdraw liquidity cannot serve.
+- `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares.
   The cut is anchored on either `supplyShares` (a set amount of the lender's supply) or `borrowShares` (an exact count of the borrower's debt, which can close a position to zero).
-  Enabled per market at creation.
+  The core enforces the exact accounting invariant that the derived `supplySharesBurned` cannot exceed the shares owned by `onBehalf`.
+  Settlement is enabled per market at creation and only for a market with a non-zero controller.
 
 ## Interfaces and libraries
 
@@ -66,7 +67,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 - Upstream Foundry tests are retained. The petrified core deploys in tests via `test/helpers/TestProxy.sol`.
 - Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
 - Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked; for deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
-- Certora: the inherited layer does not currently compile (`certora/helpers/MorphoHarness.sol` still imports the pre-fork `src/Morpho.sol`). The dead `enableIrm`/`enableLltv` rules are removed from `Reverts.spec`. Fork specs are TODO. The CI workflow stays manual-only until they pass, and the confs still pin `solc-0.8.19`.
+- Certora: the harness targets `LidoLend` with solc 0.8.35 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
 
 ## Syncing with upstream
 

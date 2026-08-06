@@ -32,8 +32,7 @@ interface ILidoLendBase is IMorphoBase {
     /// pass the borrower's whole `borrowShares` balance.
     /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
     /// @dev Settlement must be enabled on the market.
-    /// @dev The canceled debt is capped at the part of `onBehalf`'s supply that the market's available
-    /// liquidity cannot serve.
+    /// @dev The derived supply-share burn cannot exceed `onBehalf`'s owned supply shares.
     /// @dev Warning: This function calls the controller's `Settle` hook after interest accrual and before
     /// applying the state changes, and reverts when reentered from a controller hook. The hook itself may
     /// revert.

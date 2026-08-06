@@ -7,7 +7,7 @@ import {ILidoLend} from "../../src/interfaces/ILidoLend.sol";
 import {ErrorsLib} from "../../src/libraries/ErrorsLib.sol";
 
 /// @dev Tests that verify the arithmetic correctness of `settle`: conversion formulas, rounding
-///      directions, gate/cap boundaries, and share-price invariants after interest accrual.
+///      directions, ownership/cap boundaries, and share-price invariants after interest accrual.
 ///      Access control, hook payloads, events, and position-lifecycle tests live in SettleIntegrationTest.
 contract SettleMathTest is BaseTestWithController {
     using MathLib for uint256;
@@ -98,8 +98,8 @@ contract SettleMathTest is BaseTestWithController {
 
     /// @dev A controlled 1:1 market driven to a drifted index where a borrower's whole holding can no
     ///      longer be cancelled by its asset value: `toAssetsUp(holding)` converted back overshoots the
-    ///      holding. Two borrowers keep the lender's settleable supply above the cut so only the debt-cap
-    ///      decides the outcome.
+    ///      holding. Two borrowers make the target debt smaller than the lender's position, so the
+    ///      debt-cap does not mask the rounding behavior.
     function _dustyTwoBorrowerMarket() internal returns (MarketParams memory params, Id marketId, address borrower2) {
         // Wei-pinned fixture: deliberately not seeded with extra actors, they would shift the drifted state.
         (params, marketId) = _freshControlledMarket(0.9 ether);
@@ -119,42 +119,27 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(morpho.borrowShares(marketId, borrower2), 5 * SharesMathLib.VIRTUAL_SHARES, "borrower2's shares");
     }
 
-    /* GATE AND CAP BOUNDARIES */
+    /* OWNERSHIP AND CAP BOUNDARIES */
 
-    // The settleable supply is the cut's tight bound: settling exactly it passes, one wei more reverts. In this
-    // single-borrower fixture settleable equals the borrower's debt, so the extra wei is caught by the debt cap
-    // (EXCEEDS_DEBT); the liquidity gate's own boundary is exercised in the invariant suite.
-    function testSettleLiquidityGateBoundary(uint256 priceSeed, uint256 excessSeed) public {
-        uint256 supplied = 100e18;
-        uint256 borrowed = 70e18;
+    // The lender's supply value equals all free liquidity. The hook returns successfully, and the core accepts
+    // the settlement because the lender owns every share being burned.
+    function testSettleOwnershipBoundaryIndependentOfFreeLiquidity(uint256 priceSeed) public {
         _setFuzzedPrice(priceSeed);
-        _openPosition(supplied, 100e18, borrowed);
-        uint256 freeLiquidity = morpho.totalSupplyAssets(id) - morpho.totalBorrowAssets(id);
-        assertEq(freeLiquidity, supplied - borrowed, "free liquidity");
-        // Single supplier: settleable supply = own supply − free liquidity = the borrowed amount.
-        uint256 settleableSupply = supplied - freeLiquidity;
-        assertEq(settleableSupply, borrowed, "settleable supply");
-
-        // Any excess up to the lender's whole supply cancels more than BORROWER's debt, so the debt cap
-        // fires across the entire over-cap range, not just at +1 wei (EXCEEDS_DEBT precedes
-        // EXCEEDS_SETTLEABLE_SUPPLY in the check order).
-        uint256 excess = bound(excessSeed, 1, freeLiquidity);
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
-        _lido()
-            .settle(
-                marketParams,
-                (settleableSupply + excess) * SharesMathLib.VIRTUAL_SHARES,
-                0,
-                address(this),
-                BORROWER,
-                RECEIVER
-            );
+        _supplyAs(marketParams, SUPPLIER, 100e18);
+        _openPosition(10e18, 200e18, 100e18);
 
         uint256 lenderSharesBefore = morpho.supplyShares(id, address(this));
-        uint256 sliceShares = settleableSupply * SharesMathLib.VIRTUAL_SHARES;
-        (uint256 seizedAssets,,,) = _lido().settle(marketParams, sliceShares, 0, address(this), BORROWER, RECEIVER);
-        assertEq(seizedAssets, _seizedFor(settleableSupply), "seized the cancelled debt's worth of collateral");
-        assertEq(morpho.supplyShares(id, address(this)), lenderSharesBefore - sliceShares, "lender shares reduced");
+        uint256 suppliedAssets =
+            lenderSharesBefore.toAssetsDown(morpho.totalSupplyAssets(id), morpho.totalSupplyShares(id));
+        uint256 freeLiquidity = morpho.totalSupplyAssets(id) - morpho.totalBorrowAssets(id);
+        assertEq(suppliedAssets, freeLiquidity, "lender supply equals free liquidity");
+
+        (uint256 seizedAssets, uint256 canceled,, uint256 supplySharesBurned) =
+            _lido().settle(marketParams, lenderSharesBefore, 0, address(this), BORROWER, RECEIVER);
+
+        assertEq(seizedAssets, _seizedFor(canceled), "seized collateral");
+        assertEq(supplySharesBurned, lenderSharesBefore, "burned all owned shares");
+        assertEq(morpho.supplyShares(id, address(this)), 0, "lender shares");
     }
 
     // Each cap has its own error; the revert string pins which check fired.
@@ -172,8 +157,8 @@ contract SettleMathTest is BaseTestWithController {
     }
 
     // Any cut above the collateral's value seizes past the collateral while staying within the debt
-    // and the settleable supply (the borrowed amount): the collateral cap fires across the whole
-    // (collateralValue, borrowed] window, not just at one point.
+    // and owned supply: the collateral cap fires across the whole (collateralValue, borrowed] window,
+    // not just at one point.
     function testSettleOverCapCollateral(uint256 cutSeed) public {
         uint256 collateral = 100e18;
         uint256 borrowed = 70e18;
@@ -186,18 +171,13 @@ contract SettleMathTest is BaseTestWithController {
         _lido().settle(marketParams, cut * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
     }
 
-    // A second borrower shrinks free liquidity so the lender's settleable supply rises above BORROWER's
-    // debt, letting the debt cap fire instead of the liquidity gate.
+    // The debt cap fires before the ownership check for every cut above the borrower's holding.
     function testSettleOverCapBorrowShares(uint256 cutSeed) public {
         uint256 supplied = 100e18;
         uint256 borrowed = 70e18;
         _openPosition(supplied, 100e18, borrowed);
-        _borrowAs(marketParams, ONBEHALF, 100e18, 25e18);
 
-        // Any cut in (borrowed, settleable] clears the gate but burns more than BORROWER's debt:
-        // the debt cap fires across the whole window.
-        uint256 settleable = supplied - (morpho.totalSupplyAssets(id) - morpho.totalBorrowAssets(id));
-        uint256 cut = bound(cutSeed, borrowed + 1, settleable);
+        uint256 cut = bound(cutSeed, borrowed + 1, supplied);
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
         _lido().settle(marketParams, cut * SharesMathLib.VIRTUAL_SHARES, 0, address(this), BORROWER, RECEIVER);
     }
@@ -250,11 +230,9 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(seized, 1, "smallest possible seizure");
     }
 
-    // Edge: a sole borrower who is the whole pool cannot be fully closed when the lender has no surplus.
-    // The debt valued UP (toAssetsUp) is 1 wei above the lender's supply valued DOWN (settleable supply),
-    // so the borrow-anchored close trips the settleable cap (SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY). A gap is
-    // needed: another borrower, or lender surplus beyond this borrower's debt.
-    function testSettleSoleBorrowerWholePoolBlockedByCap() public {
+    // A borrow-anchored full close can require more supply shares than the lender owns. The required
+    // debt is rounded up first, then converted to supply shares rounding up again.
+    function testSettleBorrowAnchoredFullCloseExceedsOwnedSupply() public {
         // Wei-pinned scenario: deliberately not seeded with extra actors, they would break the sole-borrower
         // precondition.
         (MarketParams memory params, Id marketId) = _freshControlledMarket(0.7 ether);
@@ -269,30 +247,30 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(held, morpho.totalBorrowShares(marketId), "borrower is the whole pool");
         assertEq(morpho.totalSupplyAssets(marketId), morpho.totalBorrowAssets(marketId), "free liquidity is zero");
 
+        uint256 totalSupplyAssets = morpho.totalSupplyAssets(marketId);
+        uint256 totalSupplyShares = morpho.totalSupplyShares(marketId);
+        uint256 ownedShares = morpho.supplyShares(marketId, address(this));
         uint256 canceled = held.toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
-        uint256 settleable = morpho.supplyShares(marketId, address(this))
-            .toAssetsDown(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId));
-        assertEq(canceled, settleable + 1, "the round-up overshoots settleable by exactly 1 wei");
+        uint256 requiredSupplyShares = canceled.toSharesUp(totalSupplyAssets, totalSupplyShares);
+        assertNotEq(
+            totalSupplyAssets * SharesMathLib.VIRTUAL_SHARES, totalSupplyShares, "supply-share price must be non-round"
+        );
+        assertGt(requiredSupplyShares, ownedShares, "rounded burn exceeds owned shares");
 
-        // So the borrow-anchored full close trips the settleable cap (asking for 13).
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY));
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SUPPLY));
         _lido().settle(params, 0, held, address(this), BORROWER, RECEIVER);
 
-        // But the supply-anchored exit works: it only asks for the claimable supply (12 == settleable), so it
-        // clears the cap, the lender leaves to zero, and the borrower keeps the 1-wei virtual-buffer dust that
-        // no supply can cancel. Closing the borrower to zero is simply impossible here (13 debt vs 12 supply).
-        uint256 lenderShares = morpho.supplyShares(marketId, address(this));
-        (, uint256 canceledViaSupply,,) = _lido().settle(params, lenderShares, 0, address(this), BORROWER, RECEIVER);
-        assertEq(canceledViaSupply, settleable, "supplyShares cancels all claimable supply (12)");
+        // Supply anchoring burns exactly the owned shares and leaves the virtual-buffer debt dust.
+        (, uint256 canceledViaSupply,, uint256 burnedViaSupply) =
+            _lido().settle(params, ownedShares, 0, address(this), BORROWER, RECEIVER);
+        assertEq(canceledViaSupply, 12, "supply shares cancel all claimable supply");
+        assertEq(burnedViaSupply, ownedShares, "burned all owned shares");
         assertEq(morpho.supplyShares(marketId, address(this)), 0, "lender fully exited via supplyShares");
         assertEq(_debtAssets(marketId, BORROWER), 1, "borrower left with the 1-wei buffer dust");
     }
 
-    // The borrow-anchored burn is rounded UP twice (`toAssetsUp` then `toSharesUp`), yet it can never
-    // underflow `onBehalf`'s supply shares: the settleable cap bounds the canceled debt by the position's
-    // value rounded DOWN, and `a <= floor(s * P / Q)` implies `ceil(a * Q / P) <= s`. Pins the sharpest
-    // instance across drifted indexes: the largest admissible cut (canceling exactly the cap) burns within
-    // the position, and one asset past the cap is a clean guard revert, not a panic.
+    // Find the largest borrow-share cut whose rounded-up supply burn still fits the lender's position.
+    // The next boundary (the full borrower holding) is rejected explicitly instead of underflowing.
     function testSettleBorrowAnchoredMaxCutBurnWithinSupplyFuzz(uint256 elapsed) public {
         (MarketParams memory params, Id marketId) = _openMarketWithAccruedInterest(0.65 ether, elapsed);
 
@@ -304,37 +282,34 @@ contract SettleMathTest is BaseTestWithController {
         vars.lenderShares = morpho.supplyShares(marketId, address(this));
         vars.borrowSharesBefore = morpho.borrowShares(marketId, BORROWER);
 
-        // Zero free liquidity (fixture): the settleable cap is the lender's whole supply value, rounded DOWN.
+        // Zero free liquidity (fixture): the lender's whole position determines the ownership boundary.
         assertEq(vars.totalSupplyAssets, vars.totalBorrowAssets, "free liquidity is zero");
-        uint256 settleable = vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares);
+        uint256 maxDebtCovered = vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares);
 
-        // The largest borrow-share cut whose canceled debt (rounded UP) still clears the cap. The fixture is
+        // The largest borrow-share cut whose canceled debt (rounded UP) converts back within ownership. The fixture is
         // symmetric (the lender's supply mirrors BORROWER's debt), so it stays within BORROWER's holding.
-        vars.borrowSharesCanceled = settleable.toSharesDown(vars.totalBorrowAssets, vars.totalBorrowShares);
+        vars.borrowSharesCanceled = maxDebtCovered.toSharesDown(vars.totalBorrowAssets, vars.totalBorrowShares);
         vars.debtCanceled = vars.borrowSharesCanceled.toAssetsUp(vars.totalBorrowAssets, vars.totalBorrowShares);
-        assertEq(vars.debtCanceled, settleable, "the max cut cancels exactly the cap");
+        vars.sliceShares = vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares);
+        assertLe(vars.sliceShares, vars.lenderShares, "max cut burn fits ownership");
 
-        // One asset past the cap — the whole holding, whose round-up overshoots the down-rounded cap by
-        // exactly 1 — is rejected by the guard before any subtraction can panic.
-        assertEq(
-            vars.borrowSharesBefore.toAssetsUp(vars.totalBorrowAssets, vars.totalBorrowShares),
-            settleable + 1,
-            "the full close overshoots the cap by exactly 1"
-        );
-        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SETTLEABLE_SUPPLY));
+        uint256 fullCloseDebt = vars.borrowSharesBefore.toAssetsUp(vars.totalBorrowAssets, vars.totalBorrowShares);
+        uint256 fullCloseBurn = fullCloseDebt.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares);
+        assertGt(fullCloseBurn, vars.lenderShares, "full close burn exceeds ownership");
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SUPPLY));
         _lido().settle(params, 0, vars.borrowSharesBefore, address(this), BORROWER, RECEIVER);
 
         (vars.actualSeized, vars.actualCanceled, vars.actualSharesCanceled, vars.actualSharesBurned) =
             _lido().settle(params, 0, vars.borrowSharesCanceled, address(this), BORROWER, RECEIVER);
 
-        // The lemma itself: the rounded-up burn fits the position — the `lenderShares - sliceShares`
-        // subtractions below (and the settle above) would revert if it ever exceeded it.
-        vars.sliceShares = vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares);
         assertEq(vars.actualCanceled, vars.debtCanceled, "return debtCanceled");
         assertEq(vars.actualSeized, _seizedFor(vars.debtCanceled), "return collateralSeized");
         assertEq(vars.actualSharesCanceled, vars.borrowSharesCanceled, "return borrowSharesCanceled");
         assertEq(vars.actualSharesBurned, vars.sliceShares, "return supplySharesBurned");
-        assertEq(morpho.supplyShares(marketId, address(this)), vars.lenderShares - vars.sliceShares, "lender shares");
+        assertLe(vars.actualSharesBurned, vars.lenderShares, "burn within ownership");
+        assertEq(
+            morpho.supplyShares(marketId, address(this)), vars.lenderShares - vars.actualSharesBurned, "lender shares"
+        );
         assertEq(morpho.totalSupplyShares(marketId), vars.totalSupplyShares - vars.sliceShares, "total supply shares");
         assertEq(morpho.totalSupplyAssets(marketId), vars.totalSupplyAssets - vars.debtCanceled, "total supply assets");
         assertEq(
@@ -343,6 +318,42 @@ contract SettleMathTest is BaseTestWithController {
             "borrow shares"
         );
         assertEq(collateralToken.balanceOf(RECEIVER), vars.actualSeized, "receiver collateral");
+    }
+
+    // A non-round supply index can also land exactly on the ownership boundary. With 25 assets split
+    // 13/12 and two units of accrued interest, closing the 13-share borrower burns exactly 13 supply shares.
+    function testSettleBorrowAnchoredFullCloseAtExactOwnershipBoundary() public {
+        (MarketParams memory params, Id marketId) = _freshControlledMarket(0.775 ether);
+        address borrower2 = makeAddr("BoundaryBorrower2");
+
+        _supplyAs(params, address(this), 13);
+        _supplyAs(params, SUPPLIER, 12);
+        _borrowAs(params, BORROWER, 1e18, 13);
+        _borrowAs(params, borrower2, 1e18, 12);
+        vm.warp(block.timestamp + 30 days);
+        morpho.accrueInterest(params);
+
+        uint256 totalSupplyAssets = morpho.totalSupplyAssets(marketId);
+        uint256 totalSupplyShares = morpho.totalSupplyShares(marketId);
+        uint256 ownedShares = morpho.supplyShares(marketId, address(this));
+        uint256 heldBorrowShares = morpho.borrowShares(marketId, BORROWER);
+        uint256 canceled =
+            heldBorrowShares.toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
+        uint256 requiredSupplyShares = canceled.toSharesUp(totalSupplyAssets, totalSupplyShares);
+
+        assertEq(totalSupplyAssets, 27, "interest creates the pinned non-round index");
+        assertNotEq(
+            totalSupplyAssets * SharesMathLib.VIRTUAL_SHARES, totalSupplyShares, "supply-share price must be non-round"
+        );
+        assertEq(requiredSupplyShares, ownedShares, "full close lands on ownership boundary");
+
+        (,, uint256 borrowSharesCanceled, uint256 supplySharesBurned) =
+            _lido().settle(params, 0, heldBorrowShares, address(this), BORROWER, RECEIVER);
+
+        assertEq(borrowSharesCanceled, heldBorrowShares, "closed all borrower shares");
+        assertEq(supplySharesBurned, ownedShares, "burned exactly all owned shares");
+        assertEq(morpho.borrowShares(marketId, BORROWER), 0, "borrower closed");
+        assertEq(morpho.supplyShares(marketId, address(this)), 0, "lender closed");
     }
 
     /* EXACT ARITHMETIC */
@@ -360,14 +371,14 @@ contract SettleMathTest is BaseTestWithController {
         oracle.setPrice(price);
 
         Vars memory vars;
-        // Fuzz both regimes: free liquidity ∈ [0, borrowed-1] < borrowed (cancel window non-empty).
+        // Fuzz free liquidity independently of the core ownership boundary.
         vars.freeLiquidity = bound(extraSeed, 0, borrowed - 1);
         _openPosition(borrowed + vars.freeLiquidity, collateral, borrowed);
         assertEq(
             morpho.totalSupplyAssets(id) - morpho.totalBorrowAssets(id), vars.freeLiquidity, "free liquidity == extra"
         );
 
-        // debtCanceled ∈ (freeLiquidity, borrowed]: clears the gate, within the borrower's debt and collateral.
+        // debtCanceled is deliberately above free liquidity while remaining within debt and ownership.
         vars.debtCanceled = bound(sliceSeed, vars.freeLiquidity + 1, borrowed);
         vars.sliceShares = vars.debtCanceled * SharesMathLib.VIRTUAL_SHARES;
 
@@ -399,7 +410,8 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(vars.actualSeized, vars.collateralSeized, "return collateralSeized");
         assertEq(vars.actualSharesCanceled, vars.borrowSharesCanceled, "return borrowSharesCanceled");
         assertEq(vars.actualSharesBurned, vars.sliceShares, "return supplySharesBurned");
-        assertEq(morpho.supplyShares(id, address(this)), vars.lenderShares - vars.sliceShares, "lender shares");
+        assertLe(vars.actualSharesBurned, vars.lenderShares, "burn within ownership");
+        assertEq(morpho.supplyShares(id, address(this)), vars.lenderShares - vars.actualSharesBurned, "lender shares");
         assertEq(morpho.totalSupplyShares(id), vars.totalSupplyShares - vars.sliceShares, "total supply shares");
         assertEq(morpho.totalSupplyAssets(id), vars.totalSupplyAssets - vars.debtCanceled, "total supply assets");
         assertEq(
@@ -487,7 +499,7 @@ contract SettleMathTest is BaseTestWithController {
         vars.sliceShares = vars.debtCanceled.toSharesUp(vars.totalSupplyAssets, vars.totalSupplyShares);
         vars.collateralSeized = vars.debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, oracle.price());
         vm.assume(vars.collateralSeized > 0);
-        vm.assume(vars.debtCanceled <= vars.lenderShares.toAssetsDown(vars.totalSupplyAssets, vars.totalSupplyShares));
+        vm.assume(vars.sliceShares <= vars.lenderShares);
 
         (vars.actualSeized, vars.actualCanceled, vars.actualSharesCanceled, vars.actualSharesBurned) =
             _lido().settle(params, 0, vars.borrowSharesCanceled, address(this), BORROWER, RECEIVER);
@@ -496,7 +508,10 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(vars.actualSeized, vars.collateralSeized, "return collateralSeized");
         assertEq(vars.actualSharesCanceled, vars.borrowSharesCanceled, "return borrowSharesCanceled");
         assertEq(vars.actualSharesBurned, vars.sliceShares, "return supplySharesBurned");
-        assertEq(morpho.supplyShares(marketId, address(this)), vars.lenderShares - vars.sliceShares, "lender shares");
+        assertLe(vars.actualSharesBurned, vars.lenderShares, "burn within ownership");
+        assertEq(
+            morpho.supplyShares(marketId, address(this)), vars.lenderShares - vars.actualSharesBurned, "lender shares"
+        );
         assertEq(morpho.totalSupplyShares(marketId), vars.totalSupplyShares - vars.sliceShares, "total supply shares");
         assertEq(morpho.totalSupplyAssets(marketId), vars.totalSupplyAssets - vars.debtCanceled, "total supply assets");
         assertEq(
@@ -711,10 +726,9 @@ contract SettleMathTest is BaseTestWithController {
         );
     }
 
-    // The supply-share anchor lets a lender exit its whole position: passing all of `onBehalf`'s supply
-    // shares burns them to exactly zero. Needs a borrower whose debt exceeds the lender's supply so the
-    // derived debt-share burn stays within the borrower's holding (no EXCEEDS_DEBT).
-    function testSettleClosesLenderSupplyToZero() public {
+    // The supply-share anchor accepts exactly all owned shares and rejects one share more. The borrower's
+    // debt exceeds the lender's position, so the ownership check is the active boundary.
+    function testSettleSupplyAnchoredOwnershipBoundary() public {
         (MarketParams memory params, Id marketId) = _freshControlledMarket(0.85 ether);
 
         // Two lenders (`stake` each); one borrower owes both stakes (free liquidity 0). The borrower's
@@ -732,8 +746,13 @@ contract SettleMathTest is BaseTestWithController {
         uint256 borrowerDebtBefore = _debtAssets(marketId, BORROWER); // 100
 
         uint256 all = morpho.supplyShares(marketId, address(this));
-        (uint256 seized, uint256 canceled,,) = _lido().settle(params, all, 0, address(this), BORROWER, RECEIVER);
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_SUPPLY));
+        _lido().settle(params, all + 1, 0, address(this), BORROWER, RECEIVER);
 
+        (, uint256 canceled,, uint256 supplySharesBurned) =
+            _lido().settle(params, all, 0, address(this), BORROWER, RECEIVER);
+
+        assertEq(supplySharesBurned, all, "burned exactly all owned shares");
         assertEq(morpho.supplyShares(marketId, address(this)), 0, "lender fully exited");
         assertEq(canceled, stake, "cancelled the lender's whole supply value");
         // The borrower is left half-settled: shares and debt both halved, position still open.

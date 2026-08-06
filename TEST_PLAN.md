@@ -76,7 +76,7 @@ The lock is a single global flag, held for the length of the hook and released b
 
 ## 2. `settle`
 
-**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. Usable only on a market that opted in at creation, and only on the part of the lender's supply that ordinary withdrawal liquidity cannot serve (`_settleableSupply` = the supply value beyond free liquidity). The core does not itself prevent bad debt from a cut — that is delegated to the bound controller, consulted via its hook before the write.
+**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the exact `supplySharesBurned` to be owned by `onBehalf`; the bound controller's hook runs before the write and may revert.
 
 `SettleMathTest` holds the arithmetic, rounding, and boundary cases; `SettleIntegrationTest` the access-control, hook/event, and lifecycle cases; `SettleInvariantTest` the stateful fuzz.
 
@@ -85,25 +85,27 @@ The lock is a single global flag, held for the length of the hook and released b
 | Verifies | Test |
 |---|---|
 | All six pre-derivation guards, asserted in the core's check order on one live position: market not created, settlement disabled, inconsistent input, zero receiver, unauthorized caller, borrower with no debt | `testSettleGuardReverts` |
-| A lender whose supply sits within free liquidity (settleable = 0) cannot settle at all — fuzzed across the whole zero-settleable range, rejected cleanly before the share subtraction | `testSettleCannotCancelMoreThanOwned` |
+| Settlement succeeds when the hook returns and the lender owns the requested shares, even if its supply value equals all available free liquidity | `testSettleWhenSupplyEqualsFreeLiquidity` |
 | An address authorized by approval can cut for the lender | `testSettleAuthorizedViaApproval` |
 | An address authorized by an EIP-712 signature can cut for the lender (nonce consumed) | `testSettleAuthorizedViaSig` |
 
-### Gate and cap boundaries (`SettleMathTest`)
+### Ownership and cap boundaries (`SettleMathTest`)
 
 Each cap has its own revert string, fuzzed across its whole over-cap window rather than a single point; passing-side boundaries are pinned separately.
 
 | Verifies | Test |
 |---|---|
-| The exact-settleable cut passes; any fuzzed excess above it reverts (in this single-borrower fixture settleable equals the debt, so the whole window trips `SETTLEMENT_EXCEEDS_DEBT`) | `testSettleLiquidityGateBoundary` |
+| The core ownership boundary is independent of free liquidity: settlement succeeds when the hook returns and the lender owns every burned share | `testSettleOwnershipBoundaryIndependentOfFreeLiquidity` |
+| Supply anchoring accepts exactly all owned shares and rejects owned shares plus one with `SETTLEMENT_EXCEEDS_SUPPLY` | `testSettleSupplyAnchoredOwnershipBoundary` |
 | Seizing past the borrower's collateral reverts | `testSettleOverCapCollateral` |
 | Cancelling past the borrower's debt reverts | `testSettleOverCapBorrowShares` |
 | A slice seizing zero collateral reverts | `testSettleOverCapZeroCollateral` |
 | The borrow-share anchor does not bypass the zero-seize guard | `testSettleCloseBlockedWhenSeizeRoundsToZero` |
-| Passing side: a seizure equal to the whole collateral succeeds, stripping it to zero while the debt stays open (only the controller can forbid that) | `testSettleSeizeExactlyAllCollateral` |
+| Passing side: a seizure equal to the whole collateral succeeds when the hook returns, stripping it to zero while the debt stays open | `testSettleSeizeExactlyAllCollateral` |
 | Passing side: the smallest non-zero seizure succeeds | `testSettleSliceSeizureBoundary` |
-| The gate's 1-wei edge: a sole borrower spanning the whole pool cannot be closed via `borrowShares` when the lender holds no surplus (the round-up overshoots settleable by exactly one wei); the supply-anchored exit still clears | `testSettleSoleBorrowerWholePoolBlockedByCap` |
-| The borrow-anchored round-up burn never underflows `onBehalf`'s supply shares: across drifted indexes, the largest admissible cut cancels exactly the settleable cap and burns within the position; one asset past the cap is a clean guard revert, not a panic | `testSettleBorrowAnchoredMaxCutBurnWithinSupplyFuzz` |
+| At a non-round supply-share price, a borrow-anchored full close whose rounded burn exceeds ownership reverts with `SETTLEMENT_EXCEEDS_SUPPLY`; anchoring on all owned supply shares still succeeds | `testSettleBorrowAnchoredFullCloseExceedsOwnedSupply` |
+| At a non-round supply-share price, a borrow-anchored full close succeeds when the derived burn equals all owned shares exactly | `testSettleBorrowAnchoredFullCloseAtExactOwnershipBoundary` |
+| Across drifted indexes, the largest borrow-anchored cut whose rounded burn fits the position succeeds, while the full close over the ownership boundary reverts cleanly rather than underflowing | `testSettleBorrowAnchoredMaxCutBurnWithinSupplyFuzz` |
 
 ### Exact arithmetic (`SettleMathTest`)
 
@@ -123,7 +125,7 @@ Every fuzz pins each touched slot with an exact-equality delta plus formula-inde
 | Verifies | Test |
 |---|---|
 | The borrow anchor closes a holding whose asset value cannot (the round-trip overshoots the holding in both rounding directions), with the full rounding ledger: who pays the wei, who is relieved, share prices, solvency | `testSettleClosePositionRoundsBurnPastHolding` |
-| Passing the lender's whole supply-share balance exits the position to exactly zero | `testSettleClosesLenderSupplyToZero` |
+| Passing the lender's whole supply-share balance exits the position to exactly zero; passing one more share is rejected | `testSettleSupplyAnchoredOwnershipBoundary` |
 | Borrow-anchored close to zero: exact deltas, the `Settle` event, and the hook payload (the exact debt-share input plus derived values) | `testSettleBorrowAnchoredClosesToZero` |
 | The close across a fuzzed price range | `testSettleBorrowAnchoredCloseFuzz` |
 | A partly-settled borrower clears the residual and withdraws the rest — no residual debt, no stuck collateral | `testSettleBorrowerExitsWhole` |
@@ -141,20 +143,20 @@ Every fuzz pins each touched slot with an exact-equality delta plus formula-inde
 
 ### Crowded rerun (`SettleMathCrowdedTest`)
 
-Reruns the whole `SettleMathTest` suite with a bystander lender and borrower (equal supply and borrow) seeded into the market, pinning every assertion to relative deltas rather than a single-lender/single-borrower world. The two wei-pinned fixtures (`_dustyTwoBorrowerMarket`, the sole-borrower edge) are deliberately not seeded — extra actors would destroy the states they pin.
+Reruns the whole `SettleMathTest` suite with a bystander lender and borrower (equal supply and borrow) seeded into the market, pinning every assertion to relative deltas rather than a single-lender/single-borrower world. Wei-pinned fresh-market fixtures deliberately do not seed extra actors because that would destroy the states they pin.
 
 ### Stateful fuzz (`SettleInvariantTest`)
 
-One controller-bound market with two borrowers and a bystander lender, kept near zero free liquidity; `warp` drifts the index, `setControllerPrice` swings health, and a solvency-enforcing controller mock stands in for the production bad-debt backstop. The handlers (`settleNoRevert`, `settleCloseNoRevert`) mirror every core check, then assert the exact post-state of each successful cut against the contract's returned values.
+One controller-bound market with two borrowers and a bystander lender, kept near zero free liquidity; `warp` drifts the index, `setControllerPrice` swings health, and the test controller rejects cuts that would leave an insolvent borrower. The handlers (`settleNoRevert`, `settleCloseNoRevert`) mirror every core check, then assert the exact post-state of each successful cut against the contract's returned values.
 
 | Verifies | Test |
 |---|---|
 | A solvency-preserving cut executes with exact deltas — deterministic, so the suite cannot silently go vacuous | `testSettleHappyPath` |
-| An insolvent-leaving cut is rejected by the controller (the bad-debt backstop) | `testControllerBlocksInsolventCut` |
-| A slice above the settleable supply is rejected by the gate, fuzzed across the over-cap window | `testSettleBlockedAboveSettleableSupply` |
+| An insolvent-leaving cut is rejected by the test controller | `testControllerBlocksInsolventCut` |
+| A solvent slice whose size exceeds the lender's supply beyond free liquidity succeeds when the hook returns | `testSettleBeyondFreeLiquidity` |
 | Share conservation across all handlers, with the bystander lender and borrower untouched by every cut | `invariantSupplyShares`, `invariantBorrowShares` |
 
-The bad-debt backstop is the production controller's responsibility. That controller is not in this repo — it is the assumption to lean on (`testControllerBlocksInsolventCut` stands in via a mock enforcing post-cut solvency).
+The solvency check in this stateful suite is one concrete test-controller behavior, not a requirement imposed by the core on production controllers.
 
 ---
 

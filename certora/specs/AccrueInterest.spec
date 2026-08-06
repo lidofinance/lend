@@ -13,11 +13,13 @@ methods {
     function _.price() external with (env e) => ghostOraclePrice(e.block.timestamp) expect uint256;
     function _.transfer(address to, uint256 amount) external => ghostTransfer(to, amount) expect bool;
     function _.transferFrom(address from, address to, uint256 amount) external => ghostTransferFrom(from, to, amount) expect bool;
+    function _.marketId() external => ghostControllerMarketId(calledContract) expect bytes32;
     function _.onMorphoLiquidate(uint256, bytes) external => NONDET;
     function _.onMorphoRepay(uint256, bytes) external => NONDET;
     function _.onMorphoSupply(uint256, bytes) external => NONDET;
     function _.onMorphoSupplyCollateral(uint256, bytes) external => NONDET;
     function _.onMorphoFlashLoan(uint256, bytes) external => NONDET;
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
 ghost ghostMulDivUp(uint256, uint256, uint256) returns uint256;
@@ -27,6 +29,7 @@ ghost ghostBorrowRate(address, uint256) returns uint256;
 ghost ghostOraclePrice(uint256) returns uint256;
 ghost ghostTransfer(address, uint256) returns bool;
 ghost ghostTransferFrom(address, address, uint256) returns bool;
+ghost ghostControllerMarketId(address) returns bytes32;
 
 
 // Check that calling accrueInterest first has no effect.
@@ -96,6 +99,30 @@ rule repayAccruesInterest(env e, MorphoHarness.MarketParams marketParams, uint25
     storage afterBoth = lastStorage;
 
     repay(e, marketParams, assets, shares, onBehalf, data) at init;
+    storage afterOne = lastStorage;
+
+    assert afterBoth == afterOne;
+}
+
+// Calling accrueInterest first has no effect because settle accrues before resolving either anchor.
+rule settleAccruesInterest(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 supplySharesInput,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    require e.block.timestamp < 2^128;
+
+    storage init = lastStorage;
+
+    accrueInterest(e, marketParams);
+    settle(e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver);
+    storage afterBoth = lastStorage;
+
+    settle(e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver) at init;
     storage afterOne = lastStorage;
 
     assert afterBoth == afterOne;

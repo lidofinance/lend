@@ -15,6 +15,7 @@ methods {
     function lastUpdate(MorphoInternalAccess.Id) external returns uint256 envfree;
     function nonce(address) external returns uint256 envfree;
     function isAuthorized(address, address) external returns bool envfree;
+    function hookInProgress() external returns bool envfree;
 
     function Util.libId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
     function Util.refId(MorphoInternalAccess.MarketParams) external returns MorphoInternalAccess.Id envfree;
@@ -24,6 +25,7 @@ methods {
     function MarketParamsLib.id(MorphoInternalAccess.MarketParams memory marketParams) internal returns MorphoInternalAccess.Id => summaryId(marketParams);
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
+    function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
 persistent ghost mapping(address => mathint) balance {
@@ -328,6 +330,8 @@ rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 
     require e.msg.sender != 0;
     require e.msg.value == 0;
     require shares > 0;
+    // Model a top-level transaction rather than controller-hook reentry.
+    require !hookInProgress();
     // Safe require because of the noTimeTravel rule.
     require lastUpdate(id) <= e.block.timestamp;
     // Safe require because of the sumBorrowSharesCorrect invariant.
@@ -357,6 +361,8 @@ rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint2
     require receiver != 0;
     require e.msg.value == 0;
     require shares > 0;
+    // Model a top-level transaction rather than controller-hook reentry.
+    require !hookInProgress();
     // Assume no outstanding debt on the market.
     require totalBorrowAssets(id) == 0;
     // Safe require because of the noTimeTravel rule.
@@ -381,6 +387,8 @@ rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketPar
     require receiver != 0;
     require e.msg.value == 0;
     require assets > 0;
+    // Model a top-level transaction rather than controller-hook reentry.
+    require !hookInProgress();
     // Safe require because of the noTimeTravel rule.
     require lastUpdate(id) <= e.block.timestamp;
     // Assume that the user does not have an outstanding debt.
