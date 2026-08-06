@@ -74,7 +74,7 @@ rule hookedActionReleasesLock(method f, env e, calldataarg data) filtered {
         || f.selector == sig:withdrawCollateral(MorphoHarness.MarketParams, uint256, address, address).selector
         || f.selector == sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
         || f.selector == sig:accrueInterest(MorphoHarness.MarketParams).selector
-        || f.selector == sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+        || f.selector == sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 } {
     require !hookInProgress();
     f(e, data);

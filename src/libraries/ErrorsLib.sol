@@ -80,7 +80,9 @@ library ErrorsLib {
     /// @notice Thrown when settlement would burn more supply shares than `onBehalf` owns.
     string internal constant SETTLEMENT_EXCEEDS_SUPPLY = "settlement exceeds supply";
 
-    /// @notice Thrown when the settlement slice is too small to seize any collateral (rounds to zero).
+    /// @notice Thrown when the settlement slice is zero, or too small to seize any collateral. The seizure
+    /// prices the canceled shares down, so a cut that buys less than one collateral unit at the oracle price rounds to
+    /// zero.
     string internal constant SETTLEMENT_SLICE_TOO_SMALL = "settlement slice too small";
 
     /// @notice Thrown when the settlement slice would seize more than the borrower's collateral.

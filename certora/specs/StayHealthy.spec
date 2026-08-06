@@ -7,12 +7,14 @@ function mulDivUp(uint256 x, uint256 y, uint256 d) returns uint256 {
 }
 
 // Check that without accruing interest, ordinary interactions cannot put a healthy account into an
-// unhealthy one. Liquidation and settlement have action-specific accounting and exchange-rate rules.
+// unhealthy one. Liquidation and settlement are excluded because their share conversions make the generic
+// case intractable here. Liquidation is covered by stayHealthyLiquidateLastBorrow below, settlement by
+// settleKeepsAccountsHealthy in Settlement.spec.
 rule stayHealthy(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView &&
     f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
-    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 }
 {
     MorphoHarness.MarketParams marketParams;

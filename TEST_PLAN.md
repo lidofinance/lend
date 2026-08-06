@@ -47,7 +47,7 @@ One test per hooked action covers both sides of the hook on a shared fixture. Se
 
 ### Accrual ordering and hook pre-state (`HooksIntegrationTest`)
 
-On a live-IRM market, a probing controller records `lastUpdate`, the totals, and the borrower's position at dispatch time; each assertion is exact (against `expectedMarketBalances` and pre-action snapshots), discriminating against the opposite ordering. This is what actually pins hook-before-writes on the success path — a veto alone cannot, since a revert rolls everything back.
+On a live-IRM market, a probing controller records `lastUpdate`, the totals, and the borrower's position at dispatch time, and each assertion is exact (against `expectedMarketBalances` and pre-action snapshots), discriminating against the opposite ordering. This is what actually pins hook-before-writes on the success path — a veto alone cannot, since a revert rolls everything back.
 
 | Verifies | Test |
 |---|---|
@@ -76,58 +76,67 @@ The lock is a single global flag, held for the length of the hook and released b
 
 ## 2. `settle`
 
-**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the exact `supplySharesBurned` to be owned by `onBehalf`; the bound controller's hook runs before the write and may revert.
+**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the derived `supplySharesBurned` to be owned by `onBehalf`, and the bound controller's hook runs before the write and may revert. The debt assets and the supply burn price the cut up while the seizure prices it down, so the gap between the two valuations falls on the settling side and a cut that buys less than one collateral unit at the oracle price is rejected.
 
-`SettleMathTest` holds the arithmetic, rounding, and boundary cases; `SettleIntegrationTest` the access-control, hook/event, and lifecycle cases; `SettleInvariantTest` the stateful fuzz.
+`SettleMathTest` holds the arithmetic, rounding, and boundary cases, `SettleIntegrationTest` the access-control, hook/event, and lifecycle cases, and `SettleInvariantTest` the stateful fuzz.
 
 ### Guards and authorization (`SettleIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
-| All six pre-derivation guards, asserted in the core's check order on one live position: market not created, settlement disabled, inconsistent input, zero receiver, unauthorized caller, borrower with no debt | `testSettleGuardReverts` |
-| Settlement succeeds when the hook returns and the lender owns the requested shares, even if its supply value equals all available free liquidity | `testSettleWhenSupplyEqualsFreeLiquidity` |
+| All six pre-derivation guards, asserted in the core's check order on one live position: market not created, settlement disabled, zero borrow-share cut, zero receiver, unauthorized caller, and a cut above the borrower's zero balance | `testSettleGuardReverts` |
 | An address authorized by approval can cut for the lender | `testSettleAuthorizedViaApproval` |
 | An address authorized by an EIP-712 signature can cut for the lender (nonce consumed) | `testSettleAuthorizedViaSig` |
 
 ### Ownership and cap boundaries (`SettleMathTest`)
 
-Each cap has its own revert string, fuzzed across its whole over-cap window rather than a single point; passing-side boundaries are pinned separately.
+Each cap has its own revert string, fuzzed across its whole over-cap window rather than a single point, and passing-side boundaries are pinned separately.
 
 | Verifies | Test |
 |---|---|
 | The core ownership boundary is independent of free liquidity: settlement succeeds when the hook returns and the lender owns every burned share | `testSettleOwnershipBoundaryIndependentOfFreeLiquidity` |
-| Supply anchoring accepts exactly all owned shares and rejects owned shares plus one with `SETTLEMENT_EXCEEDS_SUPPLY` | `testSettleSupplyAnchoredOwnershipBoundary` |
+| A borrow-share cut whose derived supply burn equals all owned shares succeeds, and one more borrow share reverts with `SETTLEMENT_EXCEEDS_SUPPLY` | `testSettleDerivedSupplyOwnershipBoundary` |
 | Seizing past the borrower's collateral reverts | `testSettleOverCapCollateral` |
 | Cancelling past the borrower's debt reverts | `testSettleOverCapBorrowShares` |
 | A slice seizing zero collateral reverts | `testSettleOverCapZeroCollateral` |
-| The borrow-share anchor does not bypass the zero-seize guard | `testSettleCloseBlockedWhenSeizeRoundsToZero` |
+| An exact full-share close does not bypass the zero-seize guard | `testSettleCloseBlockedWhenSeizeRoundsToZero` |
 | Passing side: a seizure equal to the whole collateral succeeds when the hook returns, stripping it to zero while the debt stays open | `testSettleSeizeExactlyAllCollateral` |
 | Passing side: the smallest non-zero seizure succeeds | `testSettleSliceSeizureBoundary` |
-| At a non-round supply-share price, a borrow-anchored full close whose rounded burn exceeds ownership reverts with `SETTLEMENT_EXCEEDS_SUPPLY`; anchoring on all owned supply shares still succeeds | `testSettleBorrowAnchoredFullCloseExceedsOwnedSupply` |
-| At a non-round supply-share price, a borrow-anchored full close succeeds when the derived burn equals all owned shares exactly | `testSettleBorrowAnchoredFullCloseAtExactOwnershipBoundary` |
-| Across drifted indexes, the largest borrow-anchored cut whose rounded burn fits the position succeeds, while the full close over the ownership boundary reverts cleanly rather than underflowing | `testSettleBorrowAnchoredMaxCutBurnWithinSupplyFuzz` |
+| At a non-round supply-share price, a full close whose rounded burn exceeds ownership reverts with `SETTLEMENT_EXCEEDS_SUPPLY` and leaves both positions unchanged | `testSettleFullCloseExceedsOwnedSupply` |
+| At a non-round supply-share price, a full close succeeds when the derived burn equals all owned shares exactly | `testSettleFullCloseAtExactOwnershipBoundary` |
+| Across drifted indexes, the largest exact borrow-share cut whose rounded burn fits succeeds, while the full close over the ownership boundary reverts cleanly | `testSettleMaxCutBurnWithinSupplyFuzz` |
 
 ### Exact arithmetic (`SettleMathTest`)
 
-Every fuzz pins each touched slot with an exact-equality delta plus formula-independent invariants (free liquidity preserved, receiver paid, no loan tokens move).
+Every fuzz pins each touched slot with an exact-equality delta plus formula-independent invariants (receiver paid, no loan tokens move). Each fuzz also constrains its cut to be worth at least one loan-asset unit, since the downward-rounded seizure basis rejects anything smaller.
 
 | Verifies | Test |
 |---|---|
-| The supply anchor on a driftless market, across fuzzed prices, collateral, free liquidity, and slice sizes | `testSettleSuccessFuzz` |
-| The supply anchor with a drifted share index and a fuzzed price active together (both rounding legs) | `testSettleDriftedIndexWithPriceFuzz` |
-| A borrow-anchored cut strictly within the holding, under drift × price | `testSettleBorrowAnchoredPartialFuzz` |
-| A share slice under drift: the burned debt shares valued back equal the cancelled debt exactly (an under-burn would drain the pool) | `testSettleShareRoundingWithInterestFuzz` |
-| An asset target under drift: the burned supply shares valued back equal the cancelled debt exactly | `testSettleAssetTargetRoundingWithInterestFuzz` |
+| Exact borrow-share settlement on a driftless market, across fuzzed prices, collateral, free liquidity, and cut sizes | `testSettleSuccessFuzz` |
+| Exact borrow-share settlement with a drifted share index and fuzzed collateral price | `testSettleDriftedIndexWithPriceFuzz` |
+| Under interest drift, the input borrow shares are burned exactly, debt assets and supply shares are derived upward, and the seizure is derived from the same cut valued downward | `testSettleShareRoundingWithInterestFuzz` |
+| When one raw borrow share is worth more than one asset unit, the exact share cut still produces coherent asset and supply deltas | `testSettleExpensiveBorrowShareUsesExactShareCut` |
 | Settle realizes pending interest itself, and the cut is derived from the post-accrual totals (asserted against `expectedMarketBalances`) | `testSettleAccruesInterest` |
+
+### Rounding incidence (`SettleIncidenceTest`)
+
+The arithmetic tests pin the amounts. These pin who bears each rounding, which is the property that keeps `settle` in line with the rest of the core.
+
+| Verifies | Test |
+|---|---|
+| Across drift and a fuzzed price on a two-borrower market: the borrower never pays more collateral value than the debt relief it receives, the caller never collects more than the supply claim it surrenders, and an untouched borrower never owes more | `testIncidenceFuzz` |
+| A borrower with no debt cannot be settled against for any cut, even on a market where one raw borrow share is worth more than one asset unit | `testDebtlessBorrowerCannotBeSettledFuzz` |
+| A zero cut is rejected before anything is derived | `testZeroCutRejected` |
+| The debt total's zero floor is exercised: a cut valuing up to exactly one unit above the total floors the total at zero instead of underflowing, and the supply side takes the full amount | `testZeroFloorSubIsExercised` |
+| A debt holding that buys less than one collateral unit at the oracle price cannot be settled at all and stays open for `repay` or `liquidate` | `testDustPositionCannotBeClosed` |
 
 ### Position closure (`SettleMathTest`, `SettleIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
-| The borrow anchor closes a holding whose asset value cannot (the round-trip overshoots the holding in both rounding directions), with the full rounding ledger: who pays the wei, who is relieved, share prices, solvency | `testSettleClosePositionRoundsBurnPastHolding` |
-| Passing the lender's whole supply-share balance exits the position to exactly zero; passing one more share is rejected | `testSettleSupplyAnchoredOwnershipBoundary` |
-| Borrow-anchored close to zero: exact deltas, the `Settle` event, and the hook payload (the exact debt-share input plus derived values) | `testSettleBorrowAnchoredClosesToZero` |
-| The close across a fuzzed price range | `testSettleBorrowAnchoredCloseFuzz` |
+| The exact share input closes a holding whose upward-rounded asset value cannot round-trip back to that holding, with the full rounding ledger and solvency checks | `testSettleClosePositionRoundsBurnPastHolding` |
+| Full close to zero: exact deltas, the `Settle` event, and the hook payload | `testSettleClosesToZero` |
+| The close across a fuzzed price range | `testSettleCloseFuzz` |
 | A partly-settled borrower clears the residual and withdraws the rest — no residual debt, no stuck collateral | `testSettleBorrowerExitsWhole` |
 | Cancelling the whole stake zeroes the market exactly, and a fresh deposit round-trips — not bricked | `testSettleFullDrainLeavesMarketUsable` |
 | A lender == borrower loop: supply burn and borrow/collateral seizure hit distinct fields | `testSettleSelfPosition` |
@@ -137,7 +146,7 @@ Every fuzz pins each touched slot with an exact-equality delta plus formula-inde
 
 | Verifies | Test |
 |---|---|
-| The core validates the cut before consulting the controller: invalid cuts revert with the core's error and the settle hook is never dispatched (controllers trust `shares <= debt`, `0 < seize <= collateral` without re-checking) | `testSettleGuardsPrecedeHook` |
+| The core validates the cut before consulting the controller: invalid cuts revert with the core's error and the settle hook is never dispatched (controllers trust `shares <= debt`, `0 < seize <= collateral` without re-checking, but must still floor `totalBorrowAssets` when they recompute it from the payload) | `testSettleGuardsPrecedeHook` |
 | A controller veto reverts and leaves every touched slot unchanged | `testSettleControllerCanBlock` |
 | The decoded `SettleHookData`, `lastEvent`/`lastId`, and the exact `Settle` event fields, in one pass | `testSettleHookPayloadAndEvent` |
 
@@ -147,7 +156,7 @@ Reruns the whole `SettleMathTest` suite with a bystander lender and borrower (eq
 
 ### Stateful fuzz (`SettleInvariantTest`)
 
-One controller-bound market with two borrowers and a bystander lender, kept near zero free liquidity; `warp` drifts the index, `setControllerPrice` swings health, and the test controller rejects cuts that would leave an insolvent borrower. The handlers (`settleNoRevert`, `settleCloseNoRevert`) mirror every core check, then assert the exact post-state of each successful cut against the contract's returned values.
+One controller-bound market with two borrowers and a bystander lender, kept near zero free liquidity. `warp` drifts the index, `setControllerPrice` swings health, and the test controller rejects cuts that would leave an insolvent borrower. The handlers (`settleNoRevert`, `settleCloseNoRevert`) mirror every core check, then assert the exact post-state of each successful cut against the contract's returned values.
 
 | Verifies | Test |
 |---|---|
@@ -171,7 +180,7 @@ Tests deploy through the `TestProxy` harness (`InitializeIntegrationTest`).
 | The full lifecycle on one fresh proxy: starts uninitialized, rejects a zero owner, initializes exactly once (owner set, `SetOwner` emitted), then never again | `testInitializeLifecycleOnFreshProxy` |
 | The shared proxy, initialized atomically through the constructor's initData (the production deployment path), cannot be re-initialized to seize ownership | `testCannotReinitializeProxy` |
 | The bare implementation deploys locked (`isInitialized`, no owner) and cannot be initialized directly | `testImplementationIsPetrified` |
-| The proxy and the implementation each derive the exact separator from their own address and the live `block.chainid`; after a simulated chain split the proxy's separator tracks the new id | `testDomainSeparatorBindsToAddressAndChainId` |
+| The proxy and the implementation each derive the exact separator from their own address and the live `block.chainid`, and after a simulated chain split the proxy's separator tracks the new id | `testDomainSeparatorBindsToAddressAndChainId` |
 
 ---
 

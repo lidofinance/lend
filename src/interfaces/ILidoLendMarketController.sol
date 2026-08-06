@@ -120,9 +120,13 @@ interface ILidoLendMarketController {
     /// @param borrower The address whose debt is canceled and collateral seized.
     /// @param receiver The address receiving the seized collateral.
     /// @param supplySharesBurned The supply shares burned from onBehalf, after resolution.
-    /// @param borrowAssetsCanceled The loan-token debt canceled, computed in core.
+    /// @param borrowAssetsCanceled The loan-token debt canceled, computed in core. Warning: this is the canceled
+    /// shares priced up, so it can exceed the market's `totalBorrowAssets` by one unit, and the core floors that
+    /// total at zero when it applies the cut. A controller deriving post-cut state from this value must apply
+    /// the same floor instead of subtracting directly.
     /// @param borrowSharesCanceled The borrow shares burned from borrower, computed in core.
-    /// @param seizedAssets The collateral-token amount seized, computed in core.
+    /// @param seizedAssets The collateral-token amount seized, computed in core. This is the canceled shares
+    /// priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`.
     struct SettleHookData {
         address caller;
         address onBehalf;

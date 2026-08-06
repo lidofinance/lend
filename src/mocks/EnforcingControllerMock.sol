@@ -9,6 +9,7 @@ import "../libraries/ConstantsLib.sol";
 import {MorphoLib} from "../libraries/periphery/MorphoLib.sol";
 import {SharesMathLib} from "../libraries/SharesMathLib.sol";
 import {MathLib} from "../libraries/MathLib.sol";
+import {UtilsLib} from "../libraries/UtilsLib.sol";
 
 /// @title EnforcingControllerMock
 /// @notice Controller that permits a `settle` cut only if the borrower stays solvent afterwards
@@ -42,10 +43,10 @@ contract EnforcingControllerMock is ILidoLendMarketController {
         // The hook fires before the core writes state, so these reads are the pre-cut position, and the
         // core has already bounded the cut (seizedAssets <= collateral, borrowSharesCanceled <= debt shares).
         uint256 postCollateral = _core.collateral(id, d.borrower) - d.seizedAssets;
+        // `borrowAssetsCanceled` may exceed `totalBorrowAssets` by 1, so mirror the core's zero floor.
+        uint256 postTotalBorrowAssets = UtilsLib.zeroFloorSub(_core.totalBorrowAssets(id), d.borrowAssetsCanceled);
         uint256 postDebt = (_core.borrowShares(id, d.borrower) - d.borrowSharesCanceled)
-        .toAssetsUp(
-            _core.totalBorrowAssets(id) - d.borrowAssetsCanceled, _core.totalBorrowShares(id) - d.borrowSharesCanceled
-        );
+        .toAssetsUp(postTotalBorrowAssets, _core.totalBorrowShares(id) - d.borrowSharesCanceled);
 
         uint256 postCollateralValue = postCollateral.mulDivDown(_oracle.price(), ORACLE_PRICE_SCALE);
         require(postCollateralValue >= postDebt, "borrower would be insolvent");

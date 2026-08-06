@@ -38,12 +38,14 @@ function summaryMin(uint256 a, uint256 b) returns uint256 {
 }
 
 // A reverted call leaves collateral unchanged. Successful ordinary actions cannot reduce collateral
-// owned by an unrelated, unauthorized healthy user. Liquidation and settlement are checked separately.
+// owned by an unrelated, unauthorized healthy user. Liquidation seizes collateral by design. Settlement
+// seizes only from the borrower it is aimed at, which the caller must be authorized for, and its effect on
+// every other account's health is covered by settleKeepsAccountsHealthy in Settlement.spec.
 rule healthyUserCannotLoseCollateral(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView
         && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
-        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 }
 {
     MorphoHarness.MarketParams marketParams;

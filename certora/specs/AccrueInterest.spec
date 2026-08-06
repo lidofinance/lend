@@ -104,11 +104,10 @@ rule repayAccruesInterest(env e, MorphoHarness.MarketParams marketParams, uint25
     assert afterBoth == afterOne;
 }
 
-// Calling accrueInterest first has no effect because settle accrues before resolving either anchor.
+// Calling accrueInterest first has no effect because settle accrues before resolving its exact share cut.
 rule settleAccruesInterest(
     env e,
     MorphoHarness.MarketParams marketParams,
-    uint256 supplySharesInput,
     uint256 borrowSharesInput,
     address onBehalf,
     address borrower,
@@ -119,10 +118,10 @@ rule settleAccruesInterest(
     storage init = lastStorage;
 
     accrueInterest(e, marketParams);
-    settle(e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver);
+    settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
     storage afterBoth = lastStorage;
 
-    settle(e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver) at init;
+    settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver) at init;
     storage afterOne = lastStorage;
 
     assert afterBoth == afterOne;
