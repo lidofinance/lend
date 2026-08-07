@@ -191,6 +191,46 @@ contract SettleInvariantTest is InvariantTest {
         uint256 seizedValue = collateralSeized.mulDivDown(price, ORACLE_PRICE_SCALE);
         assertLe(seizedValue, debtCanceled, "dlv: seized value never exceeds the canceled debt");
         assertApproxEqAbs(seizedValue, debtCanceled, price / ORACLE_PRICE_SCALE + 2, "dlv: value conservation");
+
+        // Requirement bounds, not formula pins: the sentinel above is updated whenever the formula is, while
+        // these fail when a new formula hands the caller a profit. Each side is valued against the claim.
+        assertLe(
+            collateralSeized.mulDivUp(price, ORACLE_PRICE_SCALE),
+            c.burn.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares),
+            "dlv: payout never exceeds the down-rounded cut, even valued against the market"
+        );
+        assertGe(
+            sharesBurned.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares),
+            debtCanceled,
+            "dlv: burned supply is worth at least the canceled debt"
+        );
+        _assertBorrowerValueExchange(borrower, bystander, b, collateralSeized, price);
+    }
+
+    // `debtCanceled` leaves the market as a whole, so only part of it lands on the target's own position and
+    // the bounds above cannot see a cut that overcharges it. Both valuations round the same way, which keeps
+    // the difference non-negative.
+    function _assertBorrowerValueExchange(
+        address borrower,
+        address bystander,
+        Bal memory b,
+        uint256 collateralSeized,
+        uint256 price
+    ) internal {
+        uint256 tBA = morpho.totalBorrowAssets(cId);
+        uint256 tBS = morpho.totalBorrowShares(cId);
+
+        uint256 targetBefore = b.borrowerBorrowShares.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares);
+        uint256 targetAfter = morpho.borrowShares(cId, borrower).toAssetsDown(tBA, tBS);
+        assertLe(
+            collateralSeized.mulDivUp(price, ORACLE_PRICE_SCALE),
+            targetBefore - targetAfter,
+            "dlv: target pays no more collateral value than the debt relief it receives"
+        );
+
+        uint256 bystanderBefore = b.bystanderBorrowShares.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares);
+        uint256 bystanderAfter = morpho.borrowShares(cId, bystander).toAssetsDown(tBA, tBS);
+        assertLe(bystanderAfter, bystanderBefore, "dlv: untouched borrower never owes more");
     }
 
     // Mirrors every core pre-hook check and the controller's solvency check for an exact borrow-share cut.
