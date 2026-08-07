@@ -8,15 +8,13 @@ import {EnforcingControllerMock} from "../../src/mocks/EnforcingControllerMock.s
 import {OracleMock} from "../../src/mocks/OracleMock.sol";
 
 // Invariant suite for `settle` on one controller-bound market with two borrowers. The market is kept
-// near zero free liquidity (LENDER supplies, a borrower borrows the same); `warp` lets interest compound
-// the share/asset rate far from 1:1; `setControllerPrice` swings health so a borrower can go underwater.
+// near zero free liquidity (LENDER supplies, a borrower borrows the same). `warp` lets interest compound
+// the share/asset rate far from 1:1, and `setControllerPrice` swings health so a borrower can go underwater.
 // This suite's controller rejects cuts that would leave the borrower insolvent. `settleNoRevert` asserts
 // the exact post-state of every successful cut against the contract's *returned* values plus an independent
-// collateral-value-conservation bound, so it catches a wrong formula and not just a regressed one. A
-// companion `settleCloseNoRevert` fires the same cut borrow-anchored — passing a borrower's debt shares (the
-// whole holding closes it to zero) — through the same assertions, so the borrow anchor's up/up rounding is
-// stressed under drift too. Deterministic tests cover the branches fuzzing reaches rarely: a hook rejecting
-// an insolvent cut and a successful cut independent of free liquidity.
+// collateral-value-conservation bound, so it catches a wrong formula and not just a regressed one. Deterministic
+// tests cover the branches fuzzing reaches rarely: a hook rejecting an insolvent cut and a successful cut
+// independent of free liquidity.
 //
 // Out of scope (covered elsewhere): caller != onBehalf authorization (integration tests).
 contract SettleInvariantTest is InvariantTest {
@@ -73,7 +71,6 @@ contract SettleInvariantTest is InvariantTest {
     function setUp() public override {
         selectors.push(this.topUpControllerMarket.selector);
         selectors.push(this.settleNoRevert.selector);
-        selectors.push(this.settleCloseNoRevert.selector);
         selectors.push(this.setControllerPrice.selector);
         selectors.push(this.warp.selector);
 
@@ -97,7 +94,7 @@ contract SettleInvariantTest is InvariantTest {
 
         CB = makeAddr("ControllerBorrower");
         CB2 = makeAddr("ControllerBorrower2");
-        // A price drop can push a borrower underwater; debt (capped to MAX_TEST_AMOUNT in topUp) keeps
+        // A price drop can push a borrower underwater. Debt (capped to MAX_TEST_AMOUNT in topUp) keeps
         // shares within uint128.
         _seedBorrower(CB);
         _seedBorrower(CB2);
@@ -132,10 +129,6 @@ contract SettleInvariantTest is InvariantTest {
     // values), the bystander borrower is untouched, and seized collateral is worth no more than the debt
     // canceled (value conservation, derived independently of the contract's seize formula).
     function _executeAndAssertCut(address borrower, Cut memory c) internal {
-        _executeAndAssertCut(borrower, c, false);
-    }
-
-    function _executeAndAssertCut(address borrower, Cut memory c, bool borrowAnchored) internal {
         address bystander = borrower == CB ? CB2 : CB;
         uint256 price = cOracle.price();
 
@@ -154,9 +147,8 @@ contract SettleInvariantTest is InvariantTest {
         });
 
         vm.prank(LENDER);
-        (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesCanceled, uint256 sharesBurned) = borrowAnchored
-            ? ILidoLend(address(morpho)).settle(cParams, 0, c.burn, LENDER, borrower, LENDER)
-            : ILidoLend(address(morpho)).settle(cParams, c.sliceShares, 0, LENDER, borrower, LENDER);
+        (uint256 collateralSeized, uint256 debtCanceled, uint256 sharesCanceled, uint256 sharesBurned) =
+            ILidoLend(address(morpho)).settle(cParams, c.burn, LENDER, borrower, LENDER);
 
         // Drift sentinel: the contract still computes what the mirror predicts.
         assertEq(collateralSeized, c.collateralSeized, "dlv: return collateralSeized");
@@ -171,7 +163,12 @@ contract SettleInvariantTest is InvariantTest {
         assertEq(morpho.totalSupplyAssets(cId), b.totalSupplyAssets - debtCanceled, "dlv: totalSupplyAssets");
         assertEq(morpho.borrowShares(cId, borrower), b.borrowerBorrowShares - c.burn, "dlv: borrower borrowShares");
         assertEq(morpho.totalBorrowShares(cId), b.totalBorrowShares - c.burn, "dlv: totalBorrowShares");
-        assertEq(morpho.totalBorrowAssets(cId), b.totalBorrowAssets - debtCanceled, "dlv: totalBorrowAssets");
+        // `debtCanceled` may exceed the pre-cut total by 1, which the core floors at zero.
+        assertEq(
+            morpho.totalBorrowAssets(cId),
+            UtilsLib.zeroFloorSub(b.totalBorrowAssets, debtCanceled),
+            "dlv: totalBorrowAssets"
+        );
         assertEq(morpho.collateral(cId, borrower), b.collateral - collateralSeized, "dlv: collateral");
         assertEq(
             collateralToken.balanceOf(LENDER),
@@ -186,16 +183,58 @@ contract SettleInvariantTest is InvariantTest {
         // The bystander lender's shares are untouched by the cut.
         assertEq(morpho.supplyShares(cId, LENDER2), b.lender2Shares, "dlv: bystander lender shares");
 
-        // Value conservation: the seized collateral is worth the canceled debt up to the price rounding
-        // step. Derived from "settlement is a 1:1 value swap", independent of the seize formula (whose
-        // exact output is already pinned by the drift sentinel above).
+        // Value conservation: the seized collateral is worth the canceled debt up to two rounding steps. The
+        // debt removal rounds the cut UP while the seizure prices it DOWN, which is one asset unit of slack
+        // absorbed by the settling lender, and the price conversion adds its own step on top. Derived from
+        // "settlement is a value swap net of the rounding the initiator eats", independent of the seize
+        // formula (whose exact output is already pinned by the drift sentinel above).
         uint256 seizedValue = collateralSeized.mulDivDown(price, ORACLE_PRICE_SCALE);
-        assertApproxEqAbs(seizedValue, debtCanceled, price / ORACLE_PRICE_SCALE + 1, "dlv: value conservation");
+        assertLe(seizedValue, debtCanceled, "dlv: seized value never exceeds the canceled debt");
+        assertApproxEqAbs(seizedValue, debtCanceled, price / ORACLE_PRICE_SCALE + 2, "dlv: value conservation");
+
+        // Requirement bounds, not formula pins: the sentinel above is updated whenever the formula is, while
+        // these fail when a new formula hands the caller a profit. Each side is valued against the claim.
+        assertLe(
+            collateralSeized.mulDivUp(price, ORACLE_PRICE_SCALE),
+            c.burn.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares),
+            "dlv: payout never exceeds the down-rounded cut, even valued against the market"
+        );
+        assertGe(
+            sharesBurned.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares),
+            debtCanceled,
+            "dlv: burned supply is worth at least the canceled debt"
+        );
+        _assertBorrowerValueExchange(borrower, bystander, b, collateralSeized, price);
     }
 
-    // Mirrors every core pre-hook check and the controller's solvency check, so callers know whether a cut
-    // succeeds and whether the controller would reject it. Reads are taken after `accrueInterest` so they
-    // match the totals the core uses in the same block.
+    // `debtCanceled` leaves the market as a whole, so only part of it lands on the target's own position and
+    // the bounds above cannot see a cut that overcharges it. Both valuations round the same way, which keeps
+    // the difference non-negative.
+    function _assertBorrowerValueExchange(
+        address borrower,
+        address bystander,
+        Bal memory b,
+        uint256 collateralSeized,
+        uint256 price
+    ) internal {
+        uint256 tBA = morpho.totalBorrowAssets(cId);
+        uint256 tBS = morpho.totalBorrowShares(cId);
+
+        uint256 targetBefore = b.borrowerBorrowShares.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares);
+        uint256 targetAfter = morpho.borrowShares(cId, borrower).toAssetsDown(tBA, tBS);
+        assertLe(
+            collateralSeized.mulDivUp(price, ORACLE_PRICE_SCALE),
+            targetBefore - targetAfter,
+            "dlv: target pays no more collateral value than the debt relief it receives"
+        );
+
+        uint256 bystanderBefore = b.bystanderBorrowShares.toAssetsDown(b.totalBorrowAssets, b.totalBorrowShares);
+        uint256 bystanderAfter = morpho.borrowShares(cId, bystander).toAssetsDown(tBA, tBS);
+        assertLe(bystanderAfter, bystanderBefore, "dlv: untouched borrower never owes more");
+    }
+
+    // Mirrors every core pre-hook check and the controller's solvency check for an exact borrow-share cut.
+    // Reads are taken after `accrueInterest` so they match the totals the core uses in the same block.
     function _findCut(address borrower, uint256 sliceSeed) internal view returns (Cut memory c) {
         uint256 lenderShares = morpho.supplyShares(cId, LENDER);
         uint256 borrowerShares = morpho.borrowShares(cId, borrower);
@@ -206,50 +245,21 @@ contract SettleInvariantTest is InvariantTest {
         uint256 tBA = morpho.totalBorrowAssets(cId);
         uint256 tBS = morpho.totalBorrowShares(cId);
 
-        c.sliceShares = bound(sliceSeed, 1, lenderShares);
-        c.debtCanceled = c.sliceShares.toAssetsDown(tSA, tSS);
-
-        uint256 price = cOracle.price();
-        uint256 collateral = morpho.collateral(cId, borrower);
-        c.collateralSeized = c.debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, price);
-        if (c.collateralSeized == 0 || c.collateralSeized > collateral) return c;
-
-        c.burn = c.debtCanceled.toSharesUp(tBA, tBS);
-        if (c.burn > borrowerShares) return c;
-
-        // Replicate EnforcingControllerMock.on exactly (same reads, same rounding).
-        uint256 postDebt = (borrowerShares - c.burn).toAssetsUp(tBA - c.debtCanceled, tBS - c.burn);
-        uint256 postCollateralValue = (collateral - c.collateralSeized).mulDivDown(price, ORACLE_PRICE_SCALE);
-        c.insolvent = postCollateralValue < postDebt;
-
-        c.ok = true;
-    }
-
-    // Borrow-anchored mirror: `c.burn` is the exact debt-share input (the whole holding => close to zero), the
-    // debt is valued up, and the supply burn (`c.sliceShares`) is derived. Mirrors every core pre-hook check,
-    // including exact supply-share ownership, and the controller's solvency check.
-    function _findCloseCut(address borrower, uint256 sliceSeed) internal view returns (Cut memory c) {
-        uint256 lenderShares = morpho.supplyShares(cId, LENDER);
-        uint256 borrowerShares = morpho.borrowShares(cId, borrower);
-        if (lenderShares == 0 || borrowerShares == 0) return c;
-
-        uint256 tSA = morpho.totalSupplyAssets(cId);
-        uint256 tSS = morpho.totalSupplyShares(cId);
-        uint256 tBA = morpho.totalBorrowAssets(cId);
-        uint256 tBS = morpho.totalBorrowShares(cId);
-
-        c.burn = bound(sliceSeed, 1, borrowerShares); // EXCEEDS_DEBT: burn <= the holding
+        c.burn = bound(sliceSeed, 1, borrowerShares);
         c.debtCanceled = c.burn.toAssetsUp(tBA, tBS);
         c.sliceShares = c.debtCanceled.toSharesUp(tSA, tSS);
         if (c.sliceShares > lenderShares) return c;
 
         uint256 price = cOracle.price();
         uint256 collateral = morpho.collateral(cId, borrower);
-        c.collateralSeized = c.debtCanceled.mulDivDown(ORACLE_PRICE_SCALE, price);
+        // The core prices the seizure off the cut's rounded-DOWN asset value, while the debt removal rounds it
+        // up, so a cut worth less than one asset unit seizes nothing and the core rejects it.
+        c.collateralSeized = c.burn.toAssetsDown(tBA, tBS).mulDivDown(ORACLE_PRICE_SCALE, price);
         if (c.collateralSeized == 0 || c.collateralSeized > collateral) return c;
 
-        // Replicate EnforcingControllerMock.on exactly (same reads, same rounding).
-        uint256 postDebt = (borrowerShares - c.burn).toAssetsUp(tBA - c.debtCanceled, tBS - c.burn);
+        // Replicate EnforcingControllerMock.on exactly (same reads, same rounding, same zero floor).
+        uint256 postDebt =
+            (borrowerShares - c.burn).toAssetsUp(UtilsLib.zeroFloorSub(tBA, c.debtCanceled), tBS - c.burn);
         uint256 postCollateralValue = (collateral - c.collateralSeized).mulDivDown(price, ORACLE_PRICE_SCALE);
         c.insolvent = postCollateralValue < postDebt;
 
@@ -301,19 +311,6 @@ contract SettleInvariantTest is InvariantTest {
         _executeAndAssertCut(borrower, c);
     }
 
-    // Borrow-anchored variant: cancels an exact count of the borrower's debt shares (the whole holding closes
-    // the position to zero), with the supply burn derived. Same post-state assertions as the supply-anchored
-    // cut, so the stateful fuzz stresses the borrow anchor's up/up rounding under interest drift too.
-    function settleCloseNoRevert(uint256 borrowerSeed, uint256 sliceSeed) external {
-        morpho.accrueInterest(cParams);
-
-        address borrower = borrowerSeed % 2 == 0 ? CB : CB2;
-        Cut memory c = _findCloseCut(borrower, sliceSeed);
-        if (!c.ok || c.insolvent) return;
-
-        _executeAndAssertCut(borrower, c, true);
-    }
-
     /* DETERMINISTIC TESTS */
 
     // Happy path, asserted independently of fuzzing luck: guarantees a solvency-preserving cut both
@@ -353,7 +350,7 @@ contract SettleInvariantTest is InvariantTest {
 
         vm.prank(LENDER);
         vm.expectRevert(bytes("borrower would be insolvent"));
-        ILidoLend(address(morpho)).settle(cParams, c.sliceShares, 0, LENDER, CB, LENDER);
+        ILidoLend(address(morpho)).settle(cParams, c.burn, LENDER, CB, LENDER);
     }
 
     // This solvent cut exceeds the lender's supply beyond free liquidity, but succeeds when the hook returns

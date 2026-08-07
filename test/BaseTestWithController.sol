@@ -14,6 +14,8 @@ import {ControllerMock} from "../src/mocks/ControllerMock.sol";
 ///      `BaseTest.setUp`; the differing IRM gives this market a distinct id from the default one.
 contract BaseTestWithController is BaseTest {
     using MathLib for uint256;
+    using SharesMathLib for uint256;
+    using MorphoLib for IMorpho;
     using MarketParamsLib for MarketParams;
 
     ControllerMock internal controller;
@@ -46,6 +48,16 @@ contract BaseTestWithController is BaseTest {
     ///      core's mulDivDown).
     function _seizedFor(uint256 debtAssets) internal view returns (uint256) {
         return debtAssets.mulDivDown(ORACLE_PRICE_SCALE, oracle.price());
+    }
+
+    /// @dev Collateral seized for a cut of `borrowShares` on `marketId`, read from the pre-settle totals. The
+    ///      core prices the seizure off the rounded-DOWN asset value of those shares, while the debt removal
+    ///      rounds them up, so the gap falls on the settling lender rather than the borrower's collateral.
+    function _seizedForShares(Id marketId, uint256 borrowShares) internal view returns (uint256) {
+        return
+            _seizedFor(
+                borrowShares.toAssetsDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+            );
     }
 
     /// @dev Bounds `seed` to a healthy price (collateral worth 1x..10x the loan) and applies it.

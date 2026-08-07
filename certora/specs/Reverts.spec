@@ -24,6 +24,8 @@ methods {
 
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
     function Util.unwrapId(MorphoHarness.Id) external returns bytes32 envfree;
+    function Util.toAssetsUp(uint256, uint256, uint256) external returns uint256 envfree;
+    function Util.toSharesUp(uint256, uint256, uint256) external returns uint256 envfree;
 
     function Util.maxFee() external returns uint256 envfree;
     function Util.wad() external returns uint256 envfree;
@@ -221,11 +223,10 @@ rule accrueInterestInputValidation(env e, MorphoHarness.MarketParams marketParam
     assert !wasCreated => lastReverted;
 }
 
-// Check the settlement mode, market, receiver, and authorization guards.
+// Check the settlement amount, market, receiver, and authorization guards.
 rule settleInputValidation(
     env e,
     MorphoHarness.MarketParams marketParams,
-    uint256 supplySharesInput,
     uint256 borrowSharesInput,
     address onBehalf,
     address borrower,
@@ -236,20 +237,18 @@ rule settleInputValidation(
     bool wasCreated = isCreated(id);
     bool settlementEnabled = isSettlementEnabled(id);
 
-    settle@withrevert(
-        e, marketParams, supplySharesInput, borrowSharesInput, onBehalf, borrower, receiver
-    );
+    settle@withrevert(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
 
     assert e.msg.value != 0 || !wasCreated || !settlementEnabled
-        || !exactlyOneZero(supplySharesInput, borrowSharesInput) || receiver == 0 || !authorized
+        || borrowSharesInput == 0 || receiver == 0 || !authorized
         => lastReverted;
 }
 
-// With accrual already current, the supply anchor is the exact burn and ownership is checked without conversion.
-rule settleSupplyAnchorOwnership(
+// With accrual current, ownership is checked against the supply burn derived from the exact borrow-share cut.
+rule settleDerivedSupplyOwnership(
     env e,
     MorphoHarness.MarketParams marketParams,
-    uint256 supplySharesInput,
+    uint256 borrowSharesInput,
     address onBehalf,
     address borrower,
     address receiver
@@ -257,11 +256,13 @@ rule settleSupplyAnchorOwnership(
     MorphoHarness.Id id = Util.libId(marketParams);
     uint256 updatedAt = lastUpdate(id);
     uint256 ownedShares = supplyShares(id, onBehalf);
+    uint256 canceled = Util.toAssetsUp(borrowSharesInput, totalBorrowAssets(id), totalBorrowShares(id));
+    uint256 requiredSupplyShares = Util.toSharesUp(canceled, totalSupplyAssets(id), totalSupplyShares(id));
 
     // Freeze accrual so fee-share minting cannot change ownership before the settle guard.
     require updatedAt != 0 && updatedAt == e.block.timestamp;
 
-    settle@withrevert(e, marketParams, supplySharesInput, 0, onBehalf, borrower, receiver);
+    settle@withrevert(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
 
-    assert supplySharesInput > ownedShares => lastReverted;
+    assert requiredSupplyShares > ownedShares => lastReverted;
 }

@@ -266,7 +266,7 @@ The [`certora/specs`](specs) folder contains the following files:
 - [`Liveness.spec`](specs/Liveness.spec) checks that main functions change the owner of funds and the amount of shares as expected, and that it's always possible to exit a position.
 - [`Reentrancy.spec`](specs/Reentrancy.spec) checks the ordering of unprotected external calls and that every successful controller-hooked action releases the transient hook lock.
 - [`Reverts.spec`](specs/Reverts.spec) checks the condition for reverts and that inputs are correctly validated.
-- [`Settlement.spec`](specs/Settlement.spec) checks both settlement anchors, exact share ownership boundaries, accounting deltas, hook execution, and controller-revert atomicity.
+- [`Settlement.spec`](specs/Settlement.spec) checks exact borrow-share settlement, the derived supply-share ownership boundary, accounting deltas, hook execution, and controller-revert atomicity.
 - [`StayHealthy.spec`](specs/StayHealthy.spec) checks that functions cannot render an account unhealthy.
 - [`Transfer.spec`](specs/Transfer.spec) checks the summarization of the safe transfer library functions that are used in other specification files.
 

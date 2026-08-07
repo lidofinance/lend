@@ -35,14 +35,15 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
   While any controller hook is executing, re-entering any hooked action reverts with `HOOK_REENTRANCY`. The lock is a single global flag checked in the dispatch, so this also blocks actions on a different market or one with no controller. A no-controller market is otherwise unaffected, since it dispatches no hook of its own.
   The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working. `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
 - `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares.
-  The cut is anchored on either `supplyShares` (a set amount of the lender's supply) or `borrowShares` (an exact count of the borrower's debt, which can close a position to zero).
-  The core enforces the exact accounting invariant that the derived `supplySharesBurned` cannot exceed the shares owned by `onBehalf`.
+  The cut is an exact count of the borrower's `borrowShares`, so passing the whole balance closes the debt position to zero. Debt assets and the lender's supply-share burn are derived with upward rounding, while the seizure prices the same cut with downward rounding, so the gap between the two valuations falls on the settling side rather than on the borrower's collateral.
+  Because valuing the cut up can put the canceled debt assets one unit above `totalBorrowAssets`, that total is written with `zeroFloorSub`, as in `repay` and `liquidate`.
+  The core rejects a cut when its derived `supplySharesBurned` exceeds the shares owned by `onBehalf`.
   Settlement is enabled per market at creation and only for a market with a non-zero controller.
 
 ## Interfaces and libraries
 
 - `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and the inherited members whose fork behavior differs are annotated in place (`Warning` tags on the hooked actions and `createMarket`, `@dev` notes on `DOMAIN_SEPARATOR` and the enable views).
-  There are no other signature changes; the exhaustive delta is the "Fork Delta" section of `SPECIFICATION.md`.
+  There are no other signature changes, and the exhaustive delta is the "Fork Delta" section of `SPECIFICATION.md`.
 - `src/interfaces/ILidoLend.sol` mirrors Morpho's three-interface split. `ILidoLendBase` holds the fork-added members (`initialize`, `isInitialized`, the `createMarket` overload, `settle`, `marketController`, `isSettlementEnabled`). `ILidoLendStaticTyping` combines it with Morpho's tuple getters and is what the `LidoLend` contract inherits. `ILidoLend` combines it with the struct-returning `IMorpho`, so `ILidoLend(address(core))` works directly with the Morpho periphery libraries (`MorphoLib`, `MorphoBalancesLib`).
 - Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol`. `MorphoStorageLib.sol` exposes the fork-added storage slots.
 - ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
@@ -65,8 +66,8 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 ## Tests and verification
 
 - Upstream Foundry tests are retained. The petrified core deploys in tests via `test/helpers/TestProxy.sol`.
-- Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
-- Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked; for deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
+- Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, `test/integration/SettleIncidenceTest.sol` (pins which party bears each rounding), and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
+- Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked. For deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
 - Certora: the harness targets `LidoLend` with solc 0.8.35 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
 
 ## Syncing with upstream

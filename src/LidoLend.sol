@@ -440,7 +440,6 @@ contract LidoLend is ILidoLendStaticTyping {
     /// @inheritdoc ILidoLendBase
     function settle(
         MarketParams memory marketParams,
-        uint256 supplyShares,
         uint256 borrowShares,
         address onBehalf,
         address borrower,
@@ -457,37 +456,25 @@ contract LidoLend is ILidoLendStaticTyping {
         Id id = marketParams.id();
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(isSettlementEnabled[id], ErrorsLib.SETTLEMENT_DISABLED);
-        require(UtilsLib.exactlyOneZero(supplyShares, borrowShares), ErrorsLib.INCONSISTENT_INPUT);
+        require(borrowShares != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
         require(receiver != address(0), ErrorsLib.ZERO_ADDRESS);
         require(_isSenderAuthorized(onBehalf), ErrorsLib.UNAUTHORIZED);
 
         _accrueInterest(marketParams, id);
 
-        if (supplyShares > 0) {
-            // Supply-anchored: burn `onBehalf`'s exact supply shares, derive the rest. `toAssetsDown` cancels
-            // a hair LESS debt than that supply is worth (`onBehalf` eats the wei). `toSharesUp` burns a hair
-            // MORE borrow shares than par (remaining borrowers owe the wei).
-            supplySharesBurned = supplyShares;
-            borrowAssetsCanceled =
-                supplySharesBurned.toAssetsDown(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-            borrowSharesCanceled =
-                borrowAssetsCanceled.toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-        } else {
-            // Borrow-anchored: burn the borrower's exact debt shares, derive the rest (whole holding closes
-            // to zero). `toAssetsUp` cancels a hair MORE debt than par (this borrower's collateral covers it, and
-            // others owe one wei less). `toSharesUp` burns a hair MORE supply (`onBehalf` eats the wei).
-            borrowSharesCanceled = borrowShares;
-            borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
-            supplySharesBurned =
-                borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
-        }
+        // Borrow shares are the accounting anchor, so passing the whole holding closes the position exactly.
+        borrowSharesCanceled = borrowShares;
+        borrowAssetsCanceled = borrowShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+        supplySharesBurned = borrowAssetsCanceled.toSharesUp(market[id].totalSupplyAssets, market[id].totalSupplyShares);
 
         require(borrowSharesCanceled <= position[id][borrower].borrowShares, ErrorsLib.SETTLEMENT_EXCEEDS_DEBT);
 
         require(supplySharesBurned <= position[id][onBehalf].supplyShares, ErrorsLib.SETTLEMENT_EXCEEDS_SUPPLY);
 
+        // Priced from the canceled shares rounded down, unlike `borrowAssetsCanceled` above.
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
-        seizedAssets = borrowAssetsCanceled.mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+        seizedAssets = borrowShares.toAssetsDown(market[id].totalBorrowAssets, market[id].totalBorrowShares)
+            .mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
         require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
         require(seizedAssets <= position[id][borrower].collateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
@@ -514,7 +501,9 @@ contract LidoLend is ILidoLendStaticTyping {
 
         position[id][borrower].borrowShares -= borrowSharesCanceled.toUint128();
         market[id].totalBorrowShares -= borrowSharesCanceled.toUint128();
-        market[id].totalBorrowAssets -= borrowAssetsCanceled.toUint128();
+        // `borrowAssetsCanceled` may be greater than `totalBorrowAssets` by 1, as in `repay` and `liquidate`.
+        market[id].totalBorrowAssets =
+            UtilsLib.zeroFloorSub(market[id].totalBorrowAssets, borrowAssetsCanceled).toUint128();
 
         position[id][borrower].collateral -= seizedAssets.toUint128();
 

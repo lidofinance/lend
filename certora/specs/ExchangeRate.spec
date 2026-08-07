@@ -13,8 +13,12 @@ methods {
     function fee(MorphoHarness.Id) external returns uint256 envfree;
     function lastUpdate(MorphoHarness.Id) external returns uint256 envfree;
 
+    function totalBorrowAssets(MorphoHarness.Id) external returns uint256 envfree;
+    function totalBorrowShares(MorphoHarness.Id) external returns uint256 envfree;
+
     function Util.maxFee() external returns uint256 envfree;
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
+    function Util.toAssetsUp(uint256, uint256, uint256) external returns uint256 envfree;
 
     function UtilsLib.min(uint256 x, uint256 y) internal returns uint256 => summaryMin(x, y);
     function MathLib.mulDivDown(uint256 a, uint256 b, uint256 c) internal returns uint256 => summaryMulDivDown(a, b, c);
@@ -144,7 +148,7 @@ filtered {
     f -> !f.isView &&
     f.selector != sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector &&
     f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector &&
-    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+    f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 }
 {
     MorphoHarness.Id id;
@@ -193,39 +197,12 @@ rule repayDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketPa
     assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore;
 }
 
-// Supply anchoring removes supply assets rounded down and borrow shares rounded up. Both remaining
-// share classes therefore retain or gain value.
-rule settleSupplyAnchorIncreasesExchangeRates(
-    env e,
-    MorphoHarness.MarketParams marketParams,
-    uint256 supplySharesInput,
-    address onBehalf,
-    address borrower,
-    address receiver
-) {
-    MorphoHarness.Id id = Util.libId(marketParams);
-    require lastUpdate(id) == e.block.timestamp;
-    require e.msg.sender == onBehalf;
-
-    mathint supplyAssetsBefore = virtualTotalSupplyAssets(id);
-    mathint supplySharesBefore = virtualTotalSupplyShares(id);
-    mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
-    mathint borrowSharesBefore = virtualTotalBorrowShares(id);
-
-    settle(e, marketParams, supplySharesInput, 0, onBehalf, borrower, receiver);
-
-    mathint supplyAssetsAfter = virtualTotalSupplyAssets(id);
-    mathint supplySharesAfter = virtualTotalSupplyShares(id);
-    mathint borrowAssetsAfter = virtualTotalBorrowAssets(id);
-    mathint borrowSharesAfter = virtualTotalBorrowShares(id);
-
-    assert supplyAssetsBefore * supplySharesAfter <= supplyAssetsAfter * supplySharesBefore;
-    assert borrowAssetsBefore * borrowSharesAfter <= borrowAssetsAfter * borrowSharesBefore;
-}
-
-// Borrow anchoring removes borrow assets rounded up against an exact debt-share burn, so the remaining
+// Settlement removes borrow assets rounded up against an exact debt-share burn, so the remaining
 // borrow shares retain or lose value. Its rounded-up supply burn increases the supply exchange rate.
-rule settleBorrowAnchorExchangeRates(
+// Valuing the cut up can overshoot the debt total by one unit, in which case the write floors at zero and
+// leaves borrow shares standing against no assets, which resets the borrow rate rather than lowering it.
+// That degenerate path is excluded here and covered by the settlement accounting rules.
+rule settleExchangeRates(
     env e,
     MorphoHarness.MarketParams marketParams,
     uint256 borrowSharesInput,
@@ -236,13 +213,15 @@ rule settleBorrowAnchorExchangeRates(
     MorphoHarness.Id id = Util.libId(marketParams);
     require lastUpdate(id) == e.block.timestamp;
     require e.msg.sender == onBehalf;
+    require Util.toAssetsUp(borrowSharesInput, totalBorrowAssets(id), totalBorrowShares(id))
+        <= totalBorrowAssets(id);
 
     mathint supplyAssetsBefore = virtualTotalSupplyAssets(id);
     mathint supplySharesBefore = virtualTotalSupplyShares(id);
     mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
     mathint borrowSharesBefore = virtualTotalBorrowShares(id);
 
-    settle(e, marketParams, 0, borrowSharesInput, onBehalf, borrower, receiver);
+    settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
 
     mathint supplyAssetsAfter = virtualTotalSupplyAssets(id);
     mathint supplySharesAfter = virtualTotalSupplyShares(id);

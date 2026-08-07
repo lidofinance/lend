@@ -38,10 +38,9 @@ methods {
     // paired writes and transfers. The summaries below are therefore a sound over-approximation, and
     // they remove the nonlinear arithmetic that times the liquidate case out. Rounding exactness is
     // proved in ExactMath / AssetsAccounting / LibSummary instead. Two linear facts are kept, both
-    // true of the real functions: every conversion maps zero to zero, and the ceil-direction
-    // conversions map a positive input to a positive output (a debtless borrower stays unreachable:
-    // liquidate values zero shares to zero debt and reverts healthy, settle's positive cut rounds up
-    // to at least one debt share and trips the debt gate).
+    // true of the real functions: every conversion maps zero to zero, and the ceil-direction conversions map a
+    // positive input to a positive output. Down-rounding may map positive assets to zero shares, as in
+    // asset-denominated repay.
     function SharesMathLib.toSharesUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => positivePreserving(a);
     function SharesMathLib.toSharesDown(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
     function SharesMathLib.toAssetsUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => positivePreserving(a);
@@ -187,7 +186,6 @@ invariant idleAmountLessThanBalance(address token)
         }
         preserved settle(
             MorphoHarness.MarketParams marketParams,
-            uint256 supplySharesInput,
             uint256 borrowSharesInput,
             address onBehalf,
             address borrower,
@@ -281,7 +279,7 @@ rule userCannotGainBorrowShares(env e, method f, calldataarg args) filtered { f 
 rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataarg args) filtered {
     f -> !f.isView
         && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
-        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, uint256, address, address, address).selector
+        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 } {
     MorphoHarness.Id id;
     address user;

@@ -152,9 +152,9 @@ contract ReentrancyIntegrationTest is BaseTest {
 
         // Pre-lock, two in-limit 0.3 slices both applied cleanly; the lock blocks the reentrant one.
         uint256 slice = 30e18 * SharesMathLib.VIRTUAL_SHARES;
-        _armAndExpect(abi.encodeCall(ILidoLendBase.settle, (dp, 0, slice, address(this), BORROWER, RECEIVER)));
+        _armAndExpect(abi.encodeCall(ILidoLendBase.settle, (dp, slice, address(this), BORROWER, RECEIVER)));
         vm.expectRevert(bytes(ErrorsLib.HOOK_REENTRANCY));
-        _lido().settle(dp, 0, slice, address(this), BORROWER, RECEIVER);
+        _lido().settle(dp, slice, address(this), BORROWER, RECEIVER);
     }
 
     function testHooklessMarketActionBlockedDuringHook() public {
