@@ -2,7 +2,7 @@ This folder contains the verification of LidoLend using CVL, Certora's Verificat
 
 LidoLend inherits Morpho Blue's accounting model and adds owner-gated market creation, immutable per-market controllers, controller hooks, and settlement. The inherited core concepts are described in the [Morpho Blue whitepaper](../morpho-blue-whitepaper.pdf).
 The specifications cover both the inherited accounting properties and the LidoLend-specific behavior.
-Every configuration uses solc 0.8.35 with the Cancun EVM target required by the transient hook lock.
+Every configuration uses solc 0.8.36 with the Cancun EVM target required by the transient hook lock.
 We first give a [high-level description](#high-level-description) of the verification and then describe the [folder and file structure](#folder-and-file-structure) of the specification files.
 
 # High-level description
@@ -279,7 +279,7 @@ The [`certora/dispatch`](dispatch) folder contains different contracts similar
 
 # Getting started
 
-Install a current `certora-cli` package with `python3 -m pip install --upgrade certora-cli` and ensure that a `solc-0.8.35` executable is available on `PATH`.
+Install a current `certora-cli` package with `python3 -m pip install --upgrade certora-cli` and ensure that a `solc-0.8.36` executable is available on `PATH`.
 To verify specification files, pass to `certoraRun` the corresponding configuration file in the [`certora/confs`](confs) folder.
 It requires having set the `CERTORAKEY` environment variable to a valid Certora key.
 You can also pass additional arguments, notably to verify a specific rule.

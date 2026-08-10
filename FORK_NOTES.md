@@ -68,7 +68,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 - Upstream Foundry tests are retained. The petrified core deploys in tests via `test/helpers/TestProxy.sol`.
 - Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, `test/integration/SettleIncidenceTest.sol` (pins which party bears each rounding), and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
 - Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked. For deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
-- Certora: the harness targets `LidoLend` with solc 0.8.35 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
+- Certora: the harness targets `LidoLend` with solc 0.8.36 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
 
 ## Syncing with upstream
 
