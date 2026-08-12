@@ -133,6 +133,7 @@ The fuzz cases recompute settlement amounts and check exact deltas for the posit
 | A full cut zeros all four market totals; a subsequent supply and full-share withdrawal round-trip exactly | `testSettleFullDrainLeavesMarketUsable` |
 | A lender == borrower loop: supply burn and borrow/collateral seizure hit distinct fields | `testSettleSelfPosition` |
 | Settlement on an underwater position does not socialize residual debt: supply decreases only by the canceled amount, and remaining debt shares stay on the borrower | `testSettleBadDebtNotRealizedFuzz` |
+| When settlement exhausts collateral while leaving expensive borrow shares, direct one-share liquidation reverts; with a permissive controller, a one-unit collateral top-up can be seized to trigger repayment and bad-debt realization | `testOneCollateralUnitTopUpEnablesBadDebtRealization` |
 
 ### Hook and event (`SettleIntegrationTest`)
 

@@ -109,15 +109,18 @@ The numeric order of `HookEvent` and the layouts of hook payload structs are ABI
 
 ## Settlement
 
-[`settle`](API_REFERENCE.md#lidolend-settle) burns a supply owner's shares to cancel a borrower's debt. It sends the calculated collateral amount to a receiver chosen by the caller. No loan tokens move, so settlement can execute when an equivalent loan-token withdrawal cannot. The market must enable settlement at creation, and its controller may reject each call.
+[`settle`](#settle) burns a supply owner's shares to cancel a borrower's debt. It sends the calculated collateral amount to a receiver chosen by the caller. No loan tokens move, so settlement can execute when an equivalent loan-token withdrawal cannot. The market must enable settlement at creation, and its controller may reject each call.
 
 ### Actors
 
 `onBehalf` owns the supply shares that are burned. `msg.sender` must be `onBehalf` or an operator authorized by it. The borrower does not approve settlement, and `receiver` may be any non-zero address.
 
+> [!NOTE]
+> **Market-selection assumption.** Settlement swaps part of a supplier's loan-token claim for collateral at the oracle price. It charges no settlement fee. Market selection assumes that, while an external loan-to-collateral route such as staking or depositing is available and within its caps, it returns at least as much collateral as settlement for the same loan-token value. If that route is capped or unavailable, settlement can be more attractive. The core neither uses nor checks the route.
+
 ### Amounts and execution
 
-The caller supplies an exact borrow-share amount, denoted by `B`, and `borrowSharesCanceled = B`. All formulas use market totals after interest accrual. `B` is in raw borrow-share units. The formulas below define the remaining derived quantities; `borrowAssetsDown` is an intermediate rather than a function output.
+The caller supplies an exact borrow-share amount, denoted by `B`. All formulas use market totals after interest accrual. `B` is in raw borrow-share units. The four outputs below use raw loan-token, supply-share, or collateral-token units.
 
 `oraclePrice` uses a `1e36` scale adjusted for the loan and collateral token decimals. Multiplying a raw collateral-token amount by `oraclePrice` and dividing by `1e36` gives raw loan-token units.
 
@@ -172,10 +175,10 @@ Ignoring rounding, settlement removes the same loan-token value from debt and co
 > [!NOTE]
 > **Some debt cannot be cleared through `settle`.**
 >
-> - If settling all remaining borrow shares gives `seizedAssets == 0`, the core rejects the call before the controller hook. At the same market totals and oracle price, every smaller cut also gives zero.
-> - If settlement takes all collateral before all borrow shares are canceled, the remaining shares stay as debt.
+> - **Zero collateral payout.** If settling all remaining borrow shares gives `seizedAssets == 0`, the core rejects the call before the controller hook. At the same market totals and oracle price, every smaller cut also gives zero. This case should be resolved by calling `repay` for the remaining borrow shares.
+> - **Zero collateral with debt remaining.** If settlement takes all collateral before all borrow shares are canceled, the remaining shares stay as debt. A liquidator can use a helper contract to add one raw collateral-token unit for the borrower and then call `liquidate` with `seizedAssets = 1` and `repaidShares = 0` in the same transaction. If the borrower remains unhealthy and the derived `repaidShares` do not exceed its remaining borrow shares, the liquidator receives the collateral unit back and pays the calculated loan-token amount. The bad-debt branch then clears that borrower's remaining shares and writes off their asset value against suppliers, capped by the market's remaining `totalBorrowAssets`. A controlled market must accept both calls. If the remaining borrow shares represent only dust-sized debt, prefer `repay` instead.
 >
-> `repay` can clear either case because it does not need a collateral payout. `liquidate` can clear zero-collateral debt only when repayment of one borrow share rounds the collateral payout to zero. If that repayment produces a positive collateral payout, liquidation reverts because no collateral remains. The liquidator pays the loan-token amount for that share. The core clears the remaining borrow shares and writes off any remaining borrow assets against suppliers. If `totalBorrowAssets` is already zero, there is no further supplier loss. The core has no direct write-off function.
+> The core has no standalone write-off function.
 
 ## Proxy and storage
 
@@ -206,9 +209,9 @@ A proxy deployment must preserve this storage layout and initialize the core ato
 | Proxy admin, if the deployment is upgradeable | Can replace core logic and therefore has full power over state and funds while upgrades remain possible. |
 | Owner | Creates markets, changes the market fee up to `MAX_FEE`, changes `feeRecipient`, and transfers ownership. Changing `feeRecipient` before accrual directs pending fee shares to the new recipient. Setting the owner to zero permanently disables normal market creation and fee administration unless the proxy is upgraded. |
 | Controller | Can reject every hooked action in its market. A faulty implementation can halt those actions. Binding grants no token allowance, LidoLend authorization, or core ownership. |
-| Oracle | Determines collateral value for health checks, liquidation, and settlement. It must return a strictly positive price at the required scale and must not revert or return values large enough to overflow core arithmetic. |
+| Oracle | Determines collateral value for health checks, liquidation, and settlement. It must use the required scale and not revert or return values large enough to overflow core arithmetic. |
 | IRM | Determines interest charged over time. It must not reenter or revert and must not return a rate large enough to overflow interest accrual. |
-| Tokens | Must not reenter, negatively rebase, burn the core's balance arbitrarily, or charge transfer fees. With sufficient balances and approvals, transfers must succeed and change balances by exactly the requested amount. |
+| Tokens | Must not reenter, rebase, burn the core's balance arbitrarily, or charge transfer fees. With sufficient balances and approvals, transfers must succeed and change balances by exactly the requested amount. |
 | Callback implementer | May execute arbitrary code before the action's final incoming token transfer. It must leave sufficient balance and allowance for that transfer. |
 
 The inherited safety model assumes an oracle price cannot fall instantaneously below its previous value multiplied by `LLTV * LIF`. A larger jump can move a position past the collateral-exhaustion loss boundary before liquidation can act. Loan assets supplied and borrowed must also remain small enough for share totals to fit in `uint128`; the [`IMorpho` dependency assumptions](src/interfaces/IMorpho.sol) place the practical bound near `1e32` raw loan-token units.
