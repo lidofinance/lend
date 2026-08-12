@@ -4,7 +4,7 @@
 forge:
 	@FOUNDRY_PROFILE=no_via_ir forge $(ARGS)
 
-# Build with the AST attached, then render the "API Reference" section of SPECIFICATION.md from it.
+# Build with the AST attached, then render API_REFERENCE.md from it.
 # The generator reads only solc artifacts and resolves `@inheritdoc` itself, so no `forge doc`.
 # --force: a plain `forge build` refreshes the artifacts without the AST, and an incremental
 # `--ast` build then skips compilation and leaves them AST-less.

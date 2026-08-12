@@ -28,8 +28,8 @@ contract InitializeIntegrationTest is BaseTest {
         fresh.initialize(OWNER);
     }
 
-    // The shared proxy was initialized atomically through the TestProxy constructor's initData — the
-    // production deployment path — and cannot be re-initialized to seize ownership.
+    // The shared proxy was initialized atomically through TestProxy constructor data, modeling the
+    // initialization pattern required from a production deployment.
     function testCannotReinitializeProxy() public {
         vm.expectRevert(bytes(ErrorsLib.ALREADY_INITIALIZED));
         LidoLend(address(morpho)).initialize(OWNER);

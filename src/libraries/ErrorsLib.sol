@@ -8,7 +8,7 @@ library ErrorsLib {
     /// @notice Thrown when the caller is not the owner.
     string internal constant NOT_OWNER = "not owner";
 
-    /// @notice Thrown when the LLTV to enable exceeds the maximum LLTV.
+    /// @notice Thrown when market creation uses an LLTV greater than or equal to WAD.
     string internal constant MAX_LLTV_EXCEEDED = "max LLTV exceeded";
 
     /// @notice Thrown when the fee to set exceeds the maximum fee.
@@ -80,15 +80,13 @@ library ErrorsLib {
     /// @notice Thrown when settlement would burn more supply shares than `onBehalf` owns.
     string internal constant SETTLEMENT_EXCEEDS_SUPPLY = "settlement exceeds supply";
 
-    /// @notice Thrown when the settlement slice is zero, or too small to seize any collateral. The seizure
-    /// prices the canceled shares down, so a cut that buys less than one collateral unit at the oracle price rounds to
-    /// zero.
+    /// @notice Thrown when the settlement borrow-share input is zero or its calculated collateral output is zero.
     string internal constant SETTLEMENT_SLICE_TOO_SMALL = "settlement slice too small";
 
-    /// @notice Thrown when the settlement slice would seize more than the borrower's collateral.
+    /// @notice Thrown when settlement would seize more than the borrower's collateral.
     string internal constant SETTLEMENT_EXCEEDS_COLLATERAL = "settlement exceeds collateral";
 
-    /// @notice Thrown when the settlement slice would cancel more than the borrower's debt.
+    /// @notice Thrown when settlement would cancel more than the borrower's debt shares.
     string internal constant SETTLEMENT_EXCEEDS_DEBT = "settlement exceeds debt";
 
     /// @notice Thrown when `initialize` is called after the contract is already initialized.

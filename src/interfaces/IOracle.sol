@@ -11,5 +11,6 @@ interface IOracle {
     /// @dev It corresponds to the price of 10**(collateral token decimals) assets of collateral token quoted in
     /// 10**(loan token decimals) assets of loan token with `36 + loan token decimals - collateral token decimals`
     /// decimals of precision.
+    /// @dev The returned price must be non-zero. Settlement and some liquidation paths divide by it.
     function price() external view returns (uint256);
 }

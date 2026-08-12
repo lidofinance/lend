@@ -1,30 +1,23 @@
 # LidoLend Fork — Test Plan
 
-The fork makes three mechanical changes to Morpho: controller hooks, a `settle` primitive, and an upgradeable initializer. Each section below states what changed and maps every covered property to its test. The rest is inherited Morpho, covered by the retained upstream suite: a few of those files are minimally adapted to the fork (an added `vm.prank(OWNER)`, proxy deployment in `setUp`), and where fork tests share an inherited file they sit below a `LIDO FORK TESTS` separator with no change to any inherited scenario.
+This document maps fork requirements to the Foundry tests that exercise them; it is a coverage inventory, not a test-run report. Applicable inherited Morpho tests remain in the suite; tests for removed APIs and superseded creation guards do not. Fork-only cases in a shared file appear below a `LIDO FORK TESTS` separator.
 
 | Change | Suites |
 |---|---|
-| Controller hooks | `HooksIntegrationTest`, `ControllerIntegrationTest`, `ReentrancyIntegrationTest` |
-| `settle` | `SettleMathTest` (+ `SettleMathCrowdedTest` in the same file), `SettleIntegrationTest`, `SettleInvariantTest` |
-| Upgradeable initializer | `InitializeIntegrationTest` |
+| Owner-gated creation and controller binding | `OnlyOwnerIntegrationTest`, `CreateMarketIntegrationTest`, `ControllerIntegrationTest` |
+| Controller hooks | `HooksIntegrationTest`, `ReentrancyIntegrationTest`, `SettleIntegrationTest` |
+| `settle` | `SettleMathTest`, `SettleMathCrowdedTest`, the four suites in `test/integration/SettleIncidenceTest.sol`, `SettleIntegrationTest`, `SettleInvariantTest` |
+| Upgradeable initializer and storage | `InitializeIntegrationTest`, `MorphoStorageLibTest` |
 
-Run with `forge test`. For deep fuzz campaigns raise the rejection cap alongside the runs (see FORK_NOTES "Tests and verification"): `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test`.
+Run `forge test` for the complete Foundry suite. Run `forge coverage --report summary --no-match-coverage "test|mocks"` to produce coverage for the exact commit being reviewed. Do not copy percentages from an earlier commit: coverage can change without changing the test inventory.
 
-Coverage (`forge coverage --report summary --no-match-coverage "test|mocks"`) is complete across `src/`:
-
-| File | Lines | Statements | Branches | Functions |
-|---|---|---|---|---|
-| `src/LidoLend.sol` | 100% (274/274) | 100% (290/290) | 100% (139/139) | 100% (29/29) |
-| `src/libraries/**` (8 files) | 100% (146/146) | 100% (142/142) | 100% (16/16) | 100% (52/52) |
-| **Total** | **100% (420/420)** | **100% (432/432)** | **100% (155/155)** | **100% (81/81)** |
-
-Three revert branches upstream left untested (`setFee` / `setFeeRecipient` `ALREADY_SET`, `safeTransfer` on a reverting token) are closed by coverage-closure tests under the `LIDO FORK TESTS` separators in `OnlyOwnerIntegrationTest` and `SafeTransferLibTest`.
+For deep fuzz campaigns, raise both the run count and Foundry's rejection limit: `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test`.
 
 ---
 
 ## 1. Controller hooks
 
-**What changed.** A controller-hook dispatch (`_hook`) fires before the state writes of every state-changing action — supply, withdraw, borrow, repay, supplyCollateral, withdrawCollateral, liquidate, accrueInterest, and the new `settle`. The bound controller is optional, set once at market creation and checked against the market id it declares (`marketId()`). It can revert to veto an action. The dispatch holds a single **global** transient reentrancy lock (EIP-1153) for the length of the hook. `flashLoan` is the one state-touching path with no hook. A market with no controller dispatches no hook of its own, but is still subject to the global lock: its actions revert while another market's hook is in flight (covered below).
+The [Controller hooks](SPECIFICATION.md#controller-hooks) section defines the runtime behavior. The tests below cover dispatch, payloads, action-specific ordering, veto rollback, controller binding, and the global hook lock.
 
 ### Firing, payload, and veto (`HooksIntegrationTest`)
 
@@ -32,22 +25,24 @@ One test per hooked action covers both sides of the hook on a shared fixture. Se
 
 | Verifies | Test |
 |---|---|
-| A controller veto reverts the action with no state left behind (the touched shares/collateral/totals/token balances are unchanged), and the unblocked action dispatches the correct `HookEvent`, the bound market id, and a payload whose decoded fields match the resolved action | `testHook{Action}` (8 actions) |
+| A controller veto reverts and the state captured by the test is unchanged; the successful path dispatches the correct `HookEvent`, market id, and resolved payload | `testHookSupply`, `testHookWithdraw`, `testHookBorrow`, `testHookRepay`, `testHookSupplyCollateral`, `testHookWithdrawCollateral`, `testHookLiquidate`, `testHookAccrueInterest` |
 | The liquidate payload's `repaidAssets` / `repaidShares` equal the core's resolution exactly (mirrored via the liquidation incentive factor) | part of `testHookLiquidate` |
 | `HookEvent`'s numeric values are stable — controllers decode payloads per event, so inserting or reordering members would re-route decoding downstream | `testHookEventEnumValuesAreStable` |
 
-### Binding at creation (`ControllerIntegrationTest`)
+### Binding at creation (`OnlyOwnerIntegrationTest`, `CreateMarketIntegrationTest`, `ControllerIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
+| The plain and controlled creation overloads reject a non-owner caller | `testCreateMarketWhenNotOwner`, `testCreateMarketWithControllerWhenNotOwner` |
+| First use enables the selected IRM and LLTV; later markets using the same values do not emit duplicate enable events | `testCreateMarketEnablesIrmAndLltv`, `testCreateMarketDoesNotReEnable` |
 | Creation binds the controller and the settlement opt-in and emits `SetMarketController` / `EnableSettlement` | `testCreateMarketBindsControllerAndEmitsEvents` |
 | With settlement off: controller bound, no `EnableSettlement` emitted | `testCreateMarketWithoutSettlementSkipsEnableEvent` |
-| A zero controller is rejected regardless of the settlement flag | `testCreateMarketRevertsOnZeroController` |
+| The controlled overload rejects a zero controller regardless of the settlement flag; the plain overload is the path for a no-controller market | `testCreateMarketRevertsOnZeroController` |
 | A controller declaring a different `marketId` is rejected | `testCreateMarketRevertsOnControllerMismatch` |
 
 ### Accrual ordering and hook pre-state (`HooksIntegrationTest`)
 
-On a live-IRM market, a probing controller records `lastUpdate`, the totals, and the borrower's position at dispatch time, and each assertion is exact (against `expectedMarketBalances` and pre-action snapshots), discriminating against the opposite ordering. This is what actually pins hook-before-writes on the success path — a veto alone cannot, since a revert rolls everything back.
+On a market with a non-zero interest-rate model (IRM) and elapsed time, a probing controller records `lastUpdate`, totals, and the borrower's position at dispatch time. The tests compare them with `expectedMarketBalances` and pre-action snapshots. A controller veto cannot establish this ordering by itself because a revert rolls back every earlier write.
 
 | Verifies | Test |
 |---|---|
@@ -57,113 +52,110 @@ On a live-IRM market, a probing controller records `lastUpdate`, the totals, and
 | The Supply hook sees post-accrue, pre-supply totals: interest realized, the incoming deposit not yet booked | `testHookSupplySeesPostAccruePreSupplyState` |
 | The Borrow hook sees the pre-borrow position (new shares not yet minted) | `testHookBorrowSeesPreBorrowPosition` |
 | The Liquidate hook sees the pre-seizure position (collateral and debt shares decremented after it) | `testHookLiquidateSeesPreSeizePosition` |
-| The Settle hook sees the pre-cut position — a controller re-reading the core mid-hook gets the state the cut applies to | `testHookSettleSeesPreCutPosition` |
+| The Settle hook sees the pre-settlement position, so a controller reading the core during the hook gets the state to which the requested settlement applies | `testHookSettleSeesPreCutPosition` |
+
+There is no elapsed-interest probing test for the Withdraw or Repay hook state; their generic dispatch tests use a zero-rate IRM.
 
 ### Reentrancy lock (`ReentrancyIntegrationTest`)
 
-The lock is a single global flag, held for the length of the hook and released before state writes and Morpho callbacks. Each test arms a reentrant call that is valid on its own (positions funded, controller approved/authorized) and uses `vm.expectCall` as a negative control, so only the lock can stop it.
+These tests arm otherwise executable nested calls while a controller hook holds the global lock.
 
 | Verifies | Test |
 |---|---|
-| Reentering the same market during its hook reverts `HOOK_REENTRANCY` | `testReentrancy{Action}Blocked` (8 actions), `testReentrancySettleBlockedEvenWithinLimits` |
-| A hook re-entering through another market still reverts — the nested action never reaches the second market's hook | `testSameMarketReentryThroughOtherMarketHookBlocked` |
-| An action on a different controlled market is blocked mid-hook | `testOtherControlledMarketActionBlockedDuringHook` |
+| Reentering the same market during its hook reverts `HOOK_REENTRANCY` | `testReentrancySupplyBlocked`, `testReentrancyWithdrawBlocked`, `testReentrancyBorrowBlocked`, `testReentrancyRepayBlocked`, `testReentrancySupplyCollateralBlocked`, `testReentrancyWithdrawCollateralBlocked`, `testReentrancyLiquidateBlocked`, `testReentrancyAccrueInterestBlocked`, `testReentrancySettleBlockedEvenWithinLimits` |
+| A hook cannot enter a different controlled market; the nested action stops before the second controller hook | `testOtherControlledMarketActionBlockedDuringHook`, `testSameMarketReentryThroughOtherMarketHookBlocked` |
 | Even a no-controller market's action is blocked mid-hook | `testHooklessMarketActionBlockedDuringHook` |
 | `flashLoan` dispatches no hook and is not locked | `testFlashLoanAllowedDuringHook` |
-| A Morpho callback (after the hook and the state writes) can reenter — the upstream leverage pattern survives | `testCallbackAfterHookCanReenter` |
+| An `onMorpho*` callback runs after the hook and state writes and can enter another hooked action | `testCallbackAfterHookCanReenter` |
+
+These tests cover controller-hook reentrancy. No Foundry regression exercises reentry from the selected IRM during `borrowRate`; non-reentrant IRM behavior remains a trust assumption.
 
 ---
 
 ## 2. `settle`
 
-**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the derived `supplySharesBurned` to be owned by `onBehalf`, and the bound controller's hook runs before the write and may revert. The debt assets and the supply burn price the cut up while the seizure prices it down, so the gap between the two valuations falls on the settling side and a cut that buys less than one collateral unit at the oracle price is rejected.
-
-`SettleMathTest` holds the arithmetic, rounding, and boundary cases, `SettleIntegrationTest` the access-control, hook/event, and lifecycle cases, and `SettleInvariantTest` the stateful fuzz.
+[Settlement](SPECIFICATION.md#settlement) defines the mechanism and formulas. `SettleMathTest` covers arithmetic and boundaries, `SettleIntegrationTest` covers authorization, hooks, events, and lifecycle behavior, and `SettleInvariantTest` supplies stateful fuzz coverage.
 
 ### Guards and authorization (`SettleIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
-| All six pre-derivation guards, asserted in the core's check order on one live position: market not created, settlement disabled, zero borrow-share cut, zero receiver, unauthorized caller, and a cut above the borrower's zero balance | `testSettleGuardReverts` |
-| An address authorized by approval can cut for the lender | `testSettleAuthorizedViaApproval` |
-| An address authorized by an EIP-712 signature can cut for the lender (nonce consumed) | `testSettleAuthorizedViaSig` |
+| Guard ordering across checks before accrual and checks after derivation: market not created, settlement disabled, zero borrow-share input, zero receiver, unauthorized caller, and an input above the borrower's debt shares | `testSettleGuardReverts` |
+| An address authorized by approval can settle for the supply owner | `testSettleAuthorizedViaApproval` |
+| An address authorized by an Ethereum typed-data (EIP-712) signature can settle for the supply owner, consuming the nonce | `testSettleAuthorizedViaSig` |
 
-### Ownership and cap boundaries (`SettleMathTest`)
-
-Each cap has its own revert string, fuzzed across its whole over-cap window rather than a single point, and passing-side boundaries are pinned separately.
+### Ownership and balance boundaries (`SettleMathTest`)
 
 | Verifies | Test |
 |---|---|
 | The core ownership boundary is independent of free liquidity: settlement succeeds when the hook returns and the lender owns every burned share | `testSettleOwnershipBoundaryIndependentOfFreeLiquidity` |
-| A borrow-share cut whose derived supply burn equals all owned shares succeeds, and one more borrow share reverts with `SETTLEMENT_EXCEEDS_SUPPLY` | `testSettleDerivedSupplyOwnershipBoundary` |
+| A borrow-share input whose derived supply burn equals all owned shares succeeds, and one more borrow share reverts with `SETTLEMENT_EXCEEDS_SUPPLY` | `testSettleDerivedSupplyOwnershipBoundary` |
 | Seizing past the borrower's collateral reverts | `testSettleOverCapCollateral` |
 | Cancelling past the borrower's debt reverts | `testSettleOverCapBorrowShares` |
-| A slice seizing zero collateral reverts | `testSettleOverCapZeroCollateral` |
+| A settlement with zero calculated collateral output reverts | `testSettleOverCapZeroCollateral` |
 | An exact full-share close does not bypass the zero-seize guard | `testSettleCloseBlockedWhenSeizeRoundsToZero` |
 | Passing side: a seizure equal to the whole collateral succeeds when the hook returns, stripping it to zero while the debt stays open | `testSettleSeizeExactlyAllCollateral` |
 | Passing side: the smallest non-zero seizure succeeds | `testSettleSliceSeizureBoundary` |
 | At a non-round supply-share price, a full close whose rounded burn exceeds ownership reverts with `SETTLEMENT_EXCEEDS_SUPPLY` and leaves both positions unchanged | `testSettleFullCloseExceedsOwnedSupply` |
 | At a non-round supply-share price, a full close succeeds when the derived burn equals all owned shares exactly | `testSettleFullCloseAtExactOwnershipBoundary` |
-| Across drifted indexes, the largest exact borrow-share cut whose rounded burn fits succeeds, while the full close over the ownership boundary reverts cleanly | `testSettleMaxCutBurnWithinSupplyFuzz` |
+| After share prices change, the largest exact borrow-share input whose rounded burn fits succeeds, while a full close above the ownership boundary reverts | `testSettleMaxCutBurnWithinSupplyFuzz` |
 
 ### Exact arithmetic (`SettleMathTest`)
 
-Every fuzz pins each touched slot with an exact-equality delta plus formula-independent invariants (receiver paid, no loan tokens move). Each fuzz also constrains its cut to be worth at least one loan-asset unit, since the downward-rounded seizure basis rejects anything smaller.
+The fuzz cases recompute settlement amounts and check exact deltas for the position and market fields they capture. `testSettleSuccessFuzz` also checks the receiver's collateral and that settlement moves no loan tokens. Inputs are constrained so the final oracle conversion produces at least one raw collateral unit.
 
 | Verifies | Test |
 |---|---|
-| Exact borrow-share settlement on a driftless market, across fuzzed prices, collateral, free liquidity, and cut sizes | `testSettleSuccessFuzz` |
-| Exact borrow-share settlement with a drifted share index and fuzzed collateral price | `testSettleDriftedIndexWithPriceFuzz` |
-| Under interest drift, the input borrow shares are burned exactly, debt assets and supply shares are derived upward, and the seizure is derived from the same cut valued downward | `testSettleShareRoundingWithInterestFuzz` |
-| When one raw borrow share is worth more than one asset unit, the exact share cut still produces coherent asset and supply deltas | `testSettleExpensiveBorrowShareUsesExactShareCut` |
-| Settle realizes pending interest itself, and the cut is derived from the post-accrual totals (asserted against `expectedMarketBalances`) | `testSettleAccruesInterest` |
+| Exact borrow-share settlement before share prices change, across fuzzed prices, collateral, free liquidity, and input sizes | `testSettleSuccessFuzz` |
+| Exact borrow-share settlement after the share price changes, with a fuzzed collateral price | `testSettleDriftedIndexWithPriceFuzz` |
+| After interest changes share prices, the input borrow shares are burned exactly, debt assets and supply shares are derived upward, and collateral is derived from the same shares valued downward | `testSettleShareRoundingWithInterestFuzz` |
+| When one raw borrow share is worth more than one asset unit, the exact share input is burned and the canceled assets and supply burn match their upward-rounded conversions | `testSettleExpensiveBorrowShareUsesExactShareCut` |
+| Settlement realizes pending interest, and canceled debt assets use the post-accrual borrow totals from `expectedMarketBalances` | `testSettleAccruesInterest` |
 
-### Rounding incidence (`SettleIncidenceTest`)
-
-The arithmetic tests pin the amounts. These pin who bears each rounding, which is the property that keeps `settle` in line with the rest of the core.
+### Rounding allocation and edge cases (`test/integration/SettleIncidenceTest.sol`)
 
 | Verifies | Test |
 |---|---|
-| Across drift and a fuzzed price on a two-borrower market: the borrower never pays more collateral value than the debt relief it receives, the caller never collects more than the supply claim it surrenders, and an untouched borrower never owes more | `testIncidenceFuzz` |
-| A borrower with no debt cannot be settled against for any cut, even on a market where one raw borrow share is worth more than one asset unit | `testDebtlessBorrowerCannotBeSettledFuzz` |
-| A zero cut is rejected before anything is derived | `testZeroCutRejected` |
-| The debt total's zero floor is exercised: a cut valuing up to exactly one unit above the total floors the total at zero instead of underflowing, and the supply side takes the full amount | `testZeroFloorSubIsExercised` |
-| A debt holding that buys less than one collateral unit at the oracle price cannot be settled at all and stays open for `repay` or `liquidate` | `testDustPositionCannotBeClosed` |
+| Across changed share prices and a fuzzed oracle price: the borrower does not lose more collateral value than its debt relief, the calculated collateral output is not worth more than `onBehalf`'s surrendered supply claim, and an untouched borrower's down-rounded debt value does not increase | `testIncidenceFuzz` |
+| A borrower with no debt cannot be settled against for any input, even on a market where one raw borrow share is worth more than one asset unit | `testDebtlessBorrowerCannotBeSettledFuzz` |
+| A zero borrow-share input is rejected before any amount is calculated | `testZeroCutRejected` |
+| When upward valuation exceeds total borrow assets by one raw unit, the new total is floored at zero instead of underflowing and the supply total decreases by the full canceled amount | `testZeroFloorSubIsExercised` |
+| A full settlement of a sub-unit debt holding whose calculated collateral output is zero reverts with `SETTLEMENT_SLICE_TOO_SMALL` | `testDustPositionCannotBeClosed` |
 
 ### Position closure (`SettleMathTest`, `SettleIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
-| The exact share input closes a holding whose upward-rounded asset value cannot round-trip back to that holding, with the full rounding ledger and solvency checks | `testSettleClosePositionRoundsBurnPastHolding` |
+| When asset-to-share conversion overshoots a holding, the exact-share close zeros it and checks canceled assets, seized collateral, supply and borrow totals, bystander debt, and unchanged free liquidity | `testSettleClosePositionRoundsBurnPastHolding` |
 | Full close to zero: exact deltas, the `Settle` event, and the hook payload | `testSettleClosesToZero` |
-| The close across a fuzzed price range | `testSettleCloseFuzz` |
-| A partly-settled borrower clears the residual and withdraws the rest — no residual debt, no stuck collateral | `testSettleBorrowerExitsWhole` |
-| Cancelling the whole stake zeroes the market exactly, and a fresh deposit round-trips — not bricked | `testSettleFullDrainLeavesMarketUsable` |
+| Across a fuzzed healthy price range, a full-share cut closes the borrower, returns the expected debt and collateral amounts, and preserves zero free liquidity | `testSettleCloseFuzz` |
+| After a partial settlement, full-share repayment zeros the remaining debt and full collateral withdrawal returns every unseized collateral unit | `testSettleBorrowerExitsWhole` |
+| A full cut zeros all four market totals; a subsequent supply and full-share withdrawal round-trip exactly | `testSettleFullDrainLeavesMarketUsable` |
 | A lender == borrower loop: supply burn and borrow/collateral seizure hit distinct fields | `testSettleSelfPosition` |
-| A cut on an underwater position is not socialized: supply falls only by the canceled amount, the residual debt stays on the borrower (`liquidate` would write down here, `settle` does not) | `testSettleBadDebtNotRealizedFuzz` |
+| Settlement on an underwater position does not socialize residual debt: supply decreases only by the canceled amount, and remaining debt shares stay on the borrower | `testSettleBadDebtNotRealizedFuzz` |
 
 ### Hook and event (`SettleIntegrationTest`)
 
 | Verifies | Test |
 |---|---|
-| The core validates the cut before consulting the controller: invalid cuts revert with the core's error and the settle hook is never dispatched (controllers trust `shares <= debt`, `0 < seize <= collateral` without re-checking, but must still floor `totalBorrowAssets` when they recompute it from the payload) | `testSettleGuardsPrecedeHook` |
-| A controller veto reverts and leaves every touched slot unchanged | `testSettleControllerCanBlock` |
+| Debt- and collateral-cap failures use the core error and do not dispatch the settle hook | `testSettleGuardsPrecedeHook` |
+| A controller veto reverts and the positions and receiver balance captured by the test remain unchanged | `testSettleControllerCanBlock` |
 | The decoded `SettleHookData`, `lastEvent`/`lastId`, and the exact `Settle` event fields, in one pass | `testSettleHookPayloadAndEvent` |
 
 ### Crowded rerun (`SettleMathCrowdedTest`)
 
-Reruns the whole `SettleMathTest` suite with a bystander lender and borrower (equal supply and borrow) seeded into the market, pinning every assertion to relative deltas rather than a single-lender/single-borrower world. Wei-pinned fresh-market fixtures deliberately do not seed extra actors because that would destroy the states they pin.
+`SettleMathCrowdedTest` inherits the arithmetic suite and seeds a matched bystander lender and borrower. Tests that require wei-pinned fresh-market states retain the base fixture.
 
 ### Stateful fuzz (`SettleInvariantTest`)
 
-One controller-bound market with two borrowers and a bystander lender, kept near zero free liquidity. `warp` drifts the index, `setControllerPrice` swings health, and the test controller rejects cuts that would leave an insolvent borrower. The handlers (`settleNoRevert`, `settleCloseNoRevert`) mirror every core check, then assert the exact post-state of each successful cut against the contract's returned values.
+The invariant suite uses one controller-bound market with two borrowers and another lender, kept near zero free liquidity. `warp` changes share prices through interest, `setControllerPrice` changes health, and `topUpControllerMarket` grows positions. The `settleNoRevert` handler filters to core-valid, controller-accepted cuts and checks the exact deltas of every executed settlement.
 
 | Verifies | Test |
 |---|---|
-| A solvency-preserving cut executes with exact deltas — deterministic, so the suite cannot silently go vacuous | `testSettleHappyPath` |
-| An insolvent-leaving cut is rejected by the test controller | `testControllerBlocksInsolventCut` |
-| A solvent slice whose size exceeds the lender's supply beyond free liquidity succeeds when the hook returns | `testSettleBeyondFreeLiquidity` |
-| Share conservation across all handlers, with the bystander lender and borrower untouched by every cut | `invariantSupplyShares`, `invariantBorrowShares` |
+| A deterministic solvency-preserving settlement executes with exact deltas, ensuring that the suite exercises a successful path | `testSettleHappyPath` |
+| A settlement that would leave the borrower insolvent is rejected by the test controller | `testControllerBlocksInsolventCut` |
+| A solvent settlement beyond free market liquidity succeeds when the supply owner has enough shares and the hook returns | `testSettleBeyondFreeLiquidity` |
+| Share conservation across all handlers, with the other lender and borrower untouched by every settlement | `invariantSupplyShares`, `invariantBorrowShares` |
 
 The solvency check in this stateful suite is one concrete test-controller behavior, not a requirement imposed by the core on production controllers.
 
@@ -171,19 +163,12 @@ The solvency check in this stateful suite is one concrete test-controller behavi
 
 ## 3. Upgradeable initializer
 
-**What changed.** The core runs behind a proxy: the constructor petrifies the implementation, `initialize(owner)` replaces the constructor's owner-set, and `DOMAIN_SEPARATOR` became a view recomputed from `block.chainid` + `address(this)` instead of a bytecode immutable.
-
-Tests deploy through the `TestProxy` harness (`InitializeIntegrationTest`).
+[Proxy and storage](SPECIFICATION.md#proxy-and-storage) defines the required behavior. `InitializeIntegrationTest` deploys through the test-only `TestProxy`; this repository contains no production proxy or deployment scripts.
 
 | Verifies | Test |
 |---|---|
 | The full lifecycle on one fresh proxy: starts uninitialized, rejects a zero owner, initializes exactly once (owner set, `SetOwner` emitted), then never again | `testInitializeLifecycleOnFreshProxy` |
-| The shared proxy, initialized atomically through the constructor's initData (the production deployment path), cannot be re-initialized to seize ownership | `testCannotReinitializeProxy` |
+| The shared test proxy, initialized atomically through constructor data, cannot be re-initialized to seize ownership | `testCannotReinitializeProxy` |
 | The bare implementation deploys locked (`isInitialized`, no owner) and cannot be initialized directly | `testImplementationIsPetrified` |
 | The proxy and the implementation each derive the exact separator from their own address and the live `block.chainid`, and after a simulated chain split the proxy's separator tracks the new id | `testDomainSeparatorBindsToAddressAndChainId` |
-
----
-
-## Storage layout
-
-The fork storage fields are round-trip checked via `MorphoStorageLib` (`MorphoStorageLibTest::testStorageForkSlots`), which also pins every slot constant to its literal position — the nine upstream slots at 0–8 and the fork slots at 9–11 — so a layout reshuffle fails loudly there.
+| The nine inherited slots remain at 0–8 and the fork fields at 9–11; the storage-library accessors round-trip each field | `MorphoStorageLibTest::testStorageForkSlots` |
