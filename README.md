@@ -22,7 +22,6 @@ Maintainer and audit references:
 - [FORK_NOTES.md](FORK_NOTES.md) records the source delta from Morpho Blue.
 - [TEST_PLAN.md](TEST_PLAN.md) maps requirements to Foundry tests.
 - [certora/README.md](certora/README.md) describes the formal-verification model and its assumptions.
-- [audits/ACKNOWLEDGED.md](audits/ACKNOWLEDGED.md) maps acknowledged upstream audit findings to the current fork.
 - [SECURITY.md](SECURITY.md) gives the private vulnerability-reporting route.
 
 The source is authoritative. [`morpho-blue-whitepaper.pdf`](morpho-blue-whitepaper.pdf) explains the inherited design, and [SPECIFICATION.md](SPECIFICATION.md) documents this fork.
