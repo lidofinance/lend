@@ -1,85 +1,59 @@
-# Morpho Blue Fork Notes
+# Morpho Blue fork notes
 
-This repository is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs, extended for the Lido Lending product and imported by the product repository as a subrepository.
-The core `src/Morpho.sol` is renamed to `src/LidoLend.sol`. Everything else keeps upstream names and is edited in place where the fork requires it.
+This document records the fork point and the source, ABI, and storage differences from Morpho Blue. Runtime behavior belongs in [SPECIFICATION.md](SPECIFICATION.md); executable coverage belongs in [TEST_PLAN.md](TEST_PLAN.md).
 
 ## Fork point
 
-- Upstream: `morpho-org/morpho-blue`, branch `main`, commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a` (verified ancestor of upstream `main`).
-- The core file is forked as `src/LidoLend.sol`. Every inherited file keeps its upstream path.
+- Upstream repository: [`morpho-org/morpho-blue`](https://github.com/morpho-org/morpho-blue).
+- Upstream commit: [`1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`](https://github.com/morpho-org/morpho-blue/tree/1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a).
+- Upstream core: `src/Morpho.sol`.
+- Fork core: [`src/LidoLend.sol`](src/LidoLend.sol).
 
-## Layout rule
+The rename changes the core contract and artifact name. Other inherited files keep their upstream paths and names.
 
-Inherited files are edited in place under their upstream names. The per-path diff to the fork point is the change record.
-New files exist only for entities with no upstream counterpart: `ILidoLend.sol`, `ILidoLendMarketController.sol`, the controller mocks, `TestProxy.sol`, the fork test suites, and the fork documents with their tooling (`SPECIFICATION.md`, `TEST_PLAN.md`, this file, `tools/`).
-The core is the single rename (`Morpho.sol` → `LidoLend.sol`): its name is deploy-facing (verification, ABI artifacts, audits) and the upstream name is the upstream brand. Nothing else meets both conditions, so nothing else is renamed.
-The modification record (GPL-2.0 §2(a)) is the git history anchored to the fork point plus this document. `SECURITY.md` routes vulnerability reports to Lido.
+## Reproduce the source delta
 
-## Reproducing the diff
+Run these commands from the repository root after making the fork-point commit available locally. `HEAD` is the downstream revision under review.
 
 ```sh
 git diff -M 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src/
 git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src/Morpho.sol src/LidoLend.sol
 ```
 
-## Core changes (`src/LidoLend.sol`)
+## Source footprint
 
-- Proxy setup: the core runs behind an `OssifiableProxy` (the proxy lives in the product repo).
-  The owner is set by a one-shot `initialize(newOwner)` instead of the constructor, and the implementation petrifies itself in its constructor.
-  `DOMAIN_SEPARATOR` is computed on every call from the current chain id and address, so EIP-712 signatures bind to the proxy.
-- Market creation: only the owner can create markets, whereas upstream creation is permissionless.
-  `createMarket(params)` creates a regular Morpho market. `createMarket(params, controller, enableSettlement)` creates one with a controller and, optionally, `settle` enabled — neither choice can be changed later.
-  `enableIrm` / `enableLltv` are removed: `createMarket` enables the market's IRM and LLTV itself, emitting `EnableIrm` / `EnableLltv` on first use.
-- New per-market settings are stored in their own mappings. `MarketParams` is never extended, because its shape defines the market id that integrators compute off-chain.
-- Controller hooks: every state-changing action (`supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, `withdrawCollateral`, `liquidate`, `accrueInterest`, `settle`) dispatches the market controller's `on(...)` hook, which may revert to reject the action.
-  While any controller hook is executing, re-entering any hooked action reverts with `HOOK_REENTRANCY`. The lock is a single global flag checked in the dispatch, so this also blocks actions on a different market or one with no controller. A no-controller market is otherwise unaffected, since it dispatches no hook of its own.
-  The lock ends before state writes and Morpho callbacks, so upstream callback patterns keep working. `flashLoan` and `setAuthorization` / `setAuthorizationWithSig` are not locked, since they cannot interfere with the action in flight.
-- `settle(...)`: lets a lender exit by canceling a borrower's debt against the lender's supply shares.
-  The cut is an exact count of the borrower's `borrowShares`, so passing the whole balance closes the debt position to zero. Debt assets and the lender's supply-share burn are derived with upward rounding, while the seizure prices the same cut with downward rounding, so the gap between the two valuations falls on the settling side rather than on the borrower's collateral.
-  Because valuing the cut up can put the canceled debt assets one unit above `totalBorrowAssets`, that total is written with `zeroFloorSub`, as in `repay` and `liquidate`.
-  The core rejects a cut when its derived `supplySharesBurned` exceeds the shares owned by `onBehalf`.
-  Settlement is enabled per market at creation and only for a market with a non-zero controller.
+Inherited files are modified in place. Fork-only files are added only when no upstream file provides the required surface.
 
-## Interfaces and libraries
+| Area | Change |
+| --- | --- |
+| Core | `src/Morpho.sol` becomes `src/LidoLend.sol`; controller hooks, settlement, owner-only creation, and initialization are added. |
+| Core interface | [`ILidoLend.sol`](src/interfaces/ILidoLend.sol) adds the fork members while preserving the inherited typed-interface split. |
+| Controller interface | [`ILidoLendMarketController.sol`](src/interfaces/ILidoLendMarketController.sol) defines the hook events and payloads. |
+| Existing interfaces | `IMorpho.sol` removes `enableIrm` and `enableLltv` and documents changed behavior on inherited members. |
+| Libraries | `ErrorsLib` removes the obsolete IRM/LLTV enablement errors and adds fork errors; fork events are appended to `EventsLib`; `MorphoStorageLib` exposes the appended slots. |
+| Tests | Applicable upstream tests remain; tests for the removed enable functions and old creation guards are replaced. Fork integration, math, incidence, reentrancy, and invariant coverage is added. |
 
-- `src/interfaces/IMorpho.sol` is edited in place: `enableIrm` / `enableLltv` are removed, and the inherited members whose fork behavior differs are annotated in place (`Warning` tags on the hooked actions and `createMarket`, `@dev` notes on `DOMAIN_SEPARATOR` and the enable views).
-  There are no other signature changes, and the exhaustive delta is the "Fork Delta" section of `SPECIFICATION.md`.
-- `src/interfaces/ILidoLend.sol` mirrors Morpho's three-interface split. `ILidoLendBase` holds the fork-added members (`initialize`, `isInitialized`, the `createMarket` overload, `settle`, `marketController`, `isSettlementEnabled`). `ILidoLendStaticTyping` combines it with Morpho's tuple getters and is what the `LidoLend` contract inherits. `ILidoLend` combines it with the struct-returning `IMorpho`, so `ILidoLend(address(core))` works directly with the Morpho periphery libraries (`MorphoLib`, `MorphoBalancesLib`).
-- Fork errors and events are appended in place to `ErrorsLib.sol` / `EventsLib.sol`. `MorphoStorageLib.sol` exposes the fork-added storage slots.
-- ABI- and topic-bearing names are never renamed: the `onMorpho*` callbacks, `IMorphoCallbacks.sol`, and the upstream event names.
+Retained inherited ABI members keep their names, including the `onMorpho*` callbacks and upstream events. The core contract is renamed, `enableIrm` and `enableLltv` are removed, and fork-specific members are added as listed above.
 
 ## Storage layout
 
-Upstream slots 0–8 keep their positions. The fork appends `marketController` (slot 9), `isSettlementEnabled` (slot 10), and `isInitialized` (slot 11). The authoritative slot table lives in `SPECIFICATION.md` "Proxy And Storage", and the literal positions are pinned by `MorphoStorageLibTest::testStorageForkSlots`.
+The nine upstream slots retain their positions. The fork appends:
 
-A new field must be appended after slot 11 (or packed alongside `isInitialized`). Reordering or inserting fields breaks proxy storage on upgrade.
-The hook lock `_hookInProgress` is transient and occupies no persistent slot.
+| Slot | Field |
+| --- | --- |
+| 9 | `marketController` |
+| 10 | `isSettlementEnabled` |
+| 11 | `isInitialized` |
 
-## Compatibility
+New persistent fields must be appended after slot 11 or packed without changing existing offsets. `_hookInProgress` is transient and uses no persistent slot.
 
-- Drop-in for the user-facing surface: `MarketParams` / `Position` / `Market` shapes, market id derivation, `onBehalf` and authorization semantics, selectors, events, and views are upstream-exact. A market with no controller dispatches no hook of its own, but remains subject to the global hook lock (see "Core changes").
-- Not drop-in on the admin surface: market creation is `onlyOwner`, `enableIrm` / `enableLltv` are gone ("enabled" now means "used by some created market", the allowlists remain enable-only).
-- Vault caveat: on a market with a controller, hooks may veto `supply`/`withdraw`. Product controllers must not break the vault flows they intend to serve.
-- The core is upgradeable: upstream's immutability-derived guarantees hold only as strongly as the proxy's upgrade governance, until the proxy is ossified.
-- Solidity is bumped to `0.8.36` with `evm_version = "cancun"` (pinned in `foundry.toml`, below solc 0.8.36's `osaka` default). The hook lock needs transient storage (EIP-1153), introduced in Cancun, so Cancun is the lowest EVM the fork can target.
+## Compatibility boundary
 
-## Tests and verification
+- `MarketParams`, `Position`, `Market`, market-id derivation, user action signatures, and inherited views keep their upstream ABI and data shapes. Authorization storage, signatures, and checks on inherited actions are unchanged; an authorization also grants the fork-added ability to call `settle` for the authorizer.
+- Market creation is not admin-compatible with upstream: it is owner-only, and the separate IRM and LLTV enable functions are removed.
+- The core is intended to run behind an external proxy. Immutability guarantees from upstream apply only after that proxy can no longer be upgraded.
+- Solidity is pinned to 0.8.36 and the EVM target is Cancun because the hook lock uses transient storage.
 
-- Upstream Foundry tests are retained. The petrified core deploys in tests via `test/helpers/TestProxy.sol`.
-- Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, `test/integration/SettleIncidenceTest.sol` (pins which party bears each rounding), and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
-- Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked. For deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
-- Certora: the harness targets `LidoLend` with solc 0.8.35 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
+## Upstream updates
 
-## Syncing with upstream
-
-Upstream is treated as effectively frozen. No routine sync is planned.
-If a critical fix lands upstream, port it by hand via the per-path diff to the fork point, re-run `forge test`, re-check "Storage layout", and update this document.
-
-## License
-
-Inherited and fork-added files are `GPL-2.0-or-later`. The upstream `LICENSE` file and SPDX headers are preserved.
-
-## Not core forks
-
-Controllers, registries, oracle adapters, the ERC-4626 wrapper, proxy contracts, and deployment scripts live in the product repository.
-The mocks and `TestProxy.sol` are test scaffolding, not core.
+The fork-point commit remains the comparison base. Port upstream fixes selectively, record each port in git history and this delta when its source, ABI, or storage inventory changes, then run the full test suite and recheck storage and ABI compatibility.

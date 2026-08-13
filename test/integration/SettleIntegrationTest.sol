@@ -332,6 +332,93 @@ contract SettleIntegrationTest is BaseTestWithController {
         );
     }
 
+    function testOneCollateralUnitTopUpEnablesBadDebtRealization() public {
+        (MarketParams memory params, Id marketId) = _settleToZeroCollateralWithResidualDebt();
+        uint256 liquidationIncentiveFactor = _liquidationIncentiveFactor(params.lltv);
+
+        uint256 oneShareSeized = uint256(1)
+            .toAssetsDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId))
+            .wMulDown(liquidationIncentiveFactor).mulDivDown(ORACLE_PRICE_SCALE, oracle.price());
+        assertGt(oneShareSeized, 0, "direct one-share liquidation requires collateral");
+
+        vm.prank(LIQUIDATOR);
+        vm.expectRevert(stdError.arithmeticError);
+        morpho.liquidate(params, BORROWER, 0, 1, hex"");
+
+        // Supplying collateral for another account and liquidating it are both permissionless.
+        collateralToken.setBalance(LIQUIDATOR, 1);
+        vm.prank(LIQUIDATOR);
+        morpho.supplyCollateral(params, 1, BORROWER, hex"");
+
+        uint256 totalBorrowAssetsBefore = morpho.totalBorrowAssets(marketId);
+        uint256 totalBorrowSharesBefore = morpho.totalBorrowShares(marketId);
+        uint256 totalSupplyAssetsBefore = morpho.totalSupplyAssets(marketId);
+        uint256 repaidShares = uint256(1).mulDivUp(oracle.price(), ORACLE_PRICE_SCALE)
+            .wDivUp(liquidationIncentiveFactor).toSharesUp(totalBorrowAssetsBefore, totalBorrowSharesBefore);
+        assertLt(repaidShares, morpho.borrowShares(marketId, BORROWER), "liquidation leaves shares to write off");
+
+        uint256 expectedRepaidAssets = repaidShares.toAssetsUp(totalBorrowAssetsBefore, totalBorrowSharesBefore);
+        loanToken.setBalance(LIQUIDATOR, expectedRepaidAssets);
+
+        vm.prank(LIQUIDATOR);
+        (uint256 seizedAssets, uint256 repaidAssets) = morpho.liquidate(params, BORROWER, 1, 0, hex"");
+
+        assertEq(seizedAssets, 1, "top-up seized");
+        assertEq(repaidAssets, expectedRepaidAssets, "liquidator-funded repayment");
+        assertEq(morpho.collateral(marketId, BORROWER), 0, "collateral returned to zero");
+        assertEq(morpho.borrowShares(marketId, BORROWER), 0, "residual borrow shares cleared");
+        assertEq(morpho.totalBorrowShares(marketId), 0, "all market borrow shares cleared");
+        assertLt(
+            morpho.totalBorrowAssets(marketId),
+            totalBorrowAssetsBefore - expectedRepaidAssets,
+            "bad debt reduced borrow assets"
+        );
+        assertLt(morpho.totalSupplyAssets(marketId), totalSupplyAssetsBefore, "bad debt charged to suppliers");
+        assertEq(collateralToken.balanceOf(LIQUIDATOR), 1, "liquidator recovered the top-up");
+        assertEq(loanToken.balanceOf(LIQUIDATOR), 0, "liquidator funded the repayment");
+    }
+
+    function _settleToZeroCollateralWithResidualDebt() internal returns (MarketParams memory params, Id marketId) {
+        params = MarketParams({
+            loanToken: address(loanToken),
+            collateralToken: address(collateralToken),
+            oracle: address(oracle),
+            irm: address(irm),
+            lltv: 0.79 ether
+        });
+        marketId = params.id();
+        ControllerMock marketController = new ControllerMock(marketId);
+
+        vm.prank(OWNER);
+        _lido().createMarket(params, address(marketController), true);
+        oracle.setPrice(ORACLE_PRICE_SCALE);
+
+        uint256 initialCollateral = 1e18;
+        _supplyAs(params, address(this), 100);
+        _borrowAs(params, BORROWER, initialCollateral, 100);
+
+        // Drive the index high enough that repaying one raw borrow share seizes positive collateral.
+        for (uint256 i; i < 15; ++i) {
+            vm.warp(block.timestamp + 365 days);
+            morpho.accrueInterest(params);
+        }
+
+        uint256 cutShares = morpho.borrowShares(marketId, BORROWER) / 2;
+        uint256 collateralForCut =
+            cutShares.toAssetsDown(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
+        assertLt(collateralForCut, initialCollateral, "fixture collateral fits the initial position");
+
+        // Keep the borrower healthy while trimming collateral to exactly what settlement will seize.
+        oracle.setPrice(10 * ORACLE_PRICE_SCALE);
+        vm.prank(BORROWER);
+        morpho.withdrawCollateral(params, initialCollateral - collateralForCut, BORROWER, BORROWER);
+        oracle.setPrice(ORACLE_PRICE_SCALE);
+
+        _lido().settle(params, cutShares, address(this), BORROWER, RECEIVER);
+        assertEq(morpho.collateral(marketId, BORROWER), 0, "settlement exhausted collateral");
+        assertGt(morpho.borrowShares(marketId, BORROWER), 0, "settlement left residual debt");
+    }
+
     /* FULL CLOSE */
 
     // A second borrower keeps the market at zero free liquidity while the exact borrow-share input closes

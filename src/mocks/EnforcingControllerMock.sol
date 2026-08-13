@@ -12,10 +12,8 @@ import {MathLib} from "../libraries/MathLib.sol";
 import {UtilsLib} from "../libraries/UtilsLib.sol";
 
 /// @title EnforcingControllerMock
-/// @notice Controller that permits a `settle` cut only if the borrower stays solvent afterwards
-///         (post-cut collateral value >= post-cut debt) — the guarantee a production controller must
-///         provide, since the core itself has no solvency check on `settle`. All other hooks are
-///         permissive.
+/// @notice Test controller that permits `settle` only if the borrower remains solvent afterwards.
+/// @dev This is one test policy, not a requirement imposed on production controllers by the core.
 contract EnforcingControllerMock is ILidoLendMarketController {
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
@@ -40,8 +38,8 @@ contract EnforcingControllerMock is ILidoLendMarketController {
 
         ILidoLendMarketController.SettleHookData memory d = abi.decode(data, (ILidoLendMarketController.SettleHookData));
 
-        // The hook fires before the core writes state, so these reads are the pre-cut position, and the
-        // core has already bounded the cut (seizedAssets <= collateral, borrowSharesCanceled <= debt shares).
+        // The hook runs before settlement-specific writes, so these reads are the pre-settlement position.
+        // The core has already checked seizedAssets <= collateral and borrowSharesCanceled <= debt shares.
         uint256 postCollateral = _core.collateral(id, d.borrower) - d.seizedAssets;
         // `borrowAssetsCanceled` may exceed `totalBorrowAssets` by 1, so mirror the core's zero floor.
         uint256 postTotalBorrowAssets = UtilsLib.zeroFloorSub(_core.totalBorrowAssets(id), d.borrowAssetsCanceled);
