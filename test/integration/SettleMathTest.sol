@@ -753,15 +753,37 @@ contract SettleMathTest is BaseTestWithController {
         );
     }
 
-    // An exact borrow-share cut does not bypass the collateral guard: a dust debt at a high price still
-    // reverts SLICE_TOO_SMALL because the seized collateral rounds to zero.
-    function testSettleCloseBlockedWhenSeizeRoundsToZero() public {
-        (MarketParams memory params, Id marketId,) = _dustyTwoBorrowerMarket();
+    // The dust close on a drifted market with two borrowers. The whole holding buys no collateral, so the
+    // close is allowed and one share less is not. The other borrower is untouched. Amounts are pinned in
+    // SettleDustHoldingTest.
+    function testSettleCloseAtZeroSeizureClosesButSliceReverts() public {
+        (MarketParams memory params, Id marketId, address borrower2) = _dustyTwoBorrowerMarket();
         oracle.setPrice(MAX_COLLATERAL_PRICE);
 
         uint256 held = morpho.borrowShares(marketId, BORROWER);
+        uint256 debt = _debtAssets(marketId, BORROWER);
+        assertEq(_seizedForShares(marketId, held), 0, "the whole holding buys no collateral");
+        assertGt(debt, 1, "and it is worth more than a single loan unit");
+
+        // One share short of the holding is a slice, not a close.
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL));
-        _lido().settle(params, held, address(this), BORROWER, RECEIVER);
+        _lido().settle(params, held - 1, address(this), BORROWER, RECEIVER);
+
+        uint256 collateralBefore = morpho.collateral(marketId, BORROWER);
+        uint256 bystanderShares = morpho.borrowShares(marketId, borrower2);
+
+        (uint256 seized, uint256 canceled,,) = _lido().settle(params, held, address(this), BORROWER, RECEIVER);
+
+        assertEq(seized, 0, "closed with no collateral leg");
+        assertEq(canceled, debt, "the whole holding's upward-rounded value");
+        assertEq(morpho.borrowShares(marketId, BORROWER), 0, "position closed");
+        assertEq(morpho.collateral(marketId, BORROWER), collateralBefore, "collateral untouched");
+        assertEq(morpho.borrowShares(marketId, borrower2), bystanderShares, "bystander untouched");
+        assertLt(
+            canceled * ORACLE_PRICE_SCALE - seized * oracle.price(),
+            ORACLE_PRICE_SCALE + oracle.price(),
+            "inside the ordinary per-call bound"
+        );
     }
 }
 

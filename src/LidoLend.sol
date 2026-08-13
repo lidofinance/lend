@@ -475,7 +475,15 @@ contract LidoLend is ILidoLendStaticTyping {
         uint256 collateralPrice = IOracle(marketParams.oracle).price();
         seizedAssets = borrowShares.toAssetsDown(market[id].totalBorrowAssets, market[id].totalBorrowShares)
             .mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
-        require(seizedAssets != 0, ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL);
+        // A cut worth less than one collateral unit seizes nothing. Allow it only when it closes the whole
+        // position: a smaller cut seizes nothing either, so otherwise such a debt could never be settled.
+        // `onBehalf` then burns supply for `borrowAssetsCanceled` and gets no collateral back. That cost
+        // stays small, because a zero seizure means the debt is worth less than one collateral unit.
+        // Requiring a close also means the caller cannot take it twice on the same position.
+        require(
+            seizedAssets != 0 || borrowSharesCanceled == position[id][borrower].borrowShares,
+            ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL
+        );
         require(seizedAssets <= position[id][borrower].collateral, ErrorsLib.SETTLEMENT_EXCEEDS_COLLATERAL);
 
         _hook(
@@ -519,7 +527,9 @@ contract LidoLend is ILidoLendStaticTyping {
             seizedAssets
         );
 
-        IERC20(marketParams.collateralToken).safeTransfer(receiver, seizedAssets);
+        // Zero after a close with nothing to seize. Skip the call: some tokens revert on a zero transfer,
+        // which would make these positions impossible to close.
+        if (seizedAssets != 0) IERC20(marketParams.collateralToken).safeTransfer(receiver, seizedAssets);
     }
 
     /* LIQUIDATION */

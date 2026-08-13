@@ -38,6 +38,7 @@ git diff --find-renames=20% 1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a HEAD -- src
   The cut is an exact count of the borrower's `borrowShares`, so passing the whole balance closes the debt position to zero. Debt assets and the lender's supply-share burn are derived with upward rounding, while the seizure prices the same cut with downward rounding, so the gap between the two valuations falls on the settling side rather than on the borrower's collateral.
   Because valuing the cut up can put the canceled debt assets one unit above `totalBorrowAssets`, that total is written with `zeroFloorSub`, as in `repay` and `liquidate`.
   The core rejects a cut when its derived `supplySharesBurned` exceeds the shares owned by `onBehalf`.
+  A cut worth less than one collateral unit seizes nothing and is rejected unless it closes the position: settlement may close a holding with nothing to seize, but never slice one.
   Settlement is enabled per market at creation and only for a market with a non-zero controller.
 
 ## Interfaces and libraries
@@ -66,7 +67,7 @@ The hook lock `_hookInProgress` is transient and occupies no persistent slot.
 ## Tests and verification
 
 - Upstream Foundry tests are retained. The petrified core deploys in tests via `test/helpers/TestProxy.sol`.
-- Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, `test/integration/SettleIncidenceTest.sol` (pins which party bears each rounding), and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
+- Fork tests: `test/integration/{Controller,Hooks,Initialize,Settle,Reentrancy}IntegrationTest.sol`, `test/integration/SettleMathTest.sol`, `test/integration/SettleIncidenceTest.sol` (pins which party bears each rounding, plus the dust close and the bad-debt write-down), `test/integration/SettleRoundingAccumulationTest.sol` (bounds the per-call rounding cost), and `test/invariant/SettleInvariantTest.sol` (fuzzes `settle` against a solvency-enforcing controller mock). See `TEST_PLAN.md`.
 - Deep fuzz runs: five inherited upstream tests (`testBorrowShares`, `testBorrowSharesOnBehalf`, `testWithdrawCollateral`, `testWithdrawCollateralOnBehalf`, `testToUint128Revert`) are `vm.assume`-heavy and hit Foundry's default rejection cap (65536) when `FOUNDRY_FUZZ_RUNS` is raised well past the default 256. This is inherited behavior, kept byte-identical to upstream rather than reworked. For deep campaigns raise the cap alongside the runs, e.g. `FOUNDRY_FUZZ_RUNS=65536 FOUNDRY_FUZZ_MAX_TEST_REJECTS=4194304 forge test` (verified clean at those settings).
 - Certora: the harness targets `LidoLend` with solc 0.8.35 and the Cancun EVM. Fork rules cover owner-gated market creation, immutable controller bindings, controller-hook locking, settlement accounting, and controller-hook atomicity. The manual CI matrix includes the dedicated settlement specification.
 

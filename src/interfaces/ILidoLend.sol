@@ -29,9 +29,9 @@ interface ILidoLendBase is IMorphoBase {
     /// @dev Cancels exactly `borrowShares` and derives the debt assets and the supply-share burn with upward rounding.
     /// @dev The seizure prices the same shares with downward rounding, so `onBehalf` bears the gap between the two
     /// valuations, which is at most one loan-asset unit.
-    /// @dev A cut that buys less than one collateral unit at the oracle price seizes nothing and reverts.
-    /// @dev Passing the borrower's entire share balance closes the debt position to zero, unless that balance itself
-    /// falls under that floor.
+    /// @dev A cut that buys less than one collateral unit at the oracle price seizes nothing and reverts, unless it
+    /// is the borrower's entire share balance: settlement may close a position with nothing to seize, never slice one.
+    /// @dev Passing the borrower's entire share balance closes the debt position to zero.
     /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
     /// @dev Settlement must be enabled on the market.
     /// @dev The derived supply-share burn cannot exceed `onBehalf`'s owned supply shares.

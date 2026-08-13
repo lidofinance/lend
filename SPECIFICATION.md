@@ -96,7 +96,7 @@ The hook is not the last gate. The inherited post-mutation checks (withdraw and 
 
 ## Settlement
 
-`settle` lets a lender exit through a borrower's position. The caller specifies an exact `borrowShares` cut. The core cancels those shares from `borrower`, burns the corresponding supply shares from `onBehalf`, and transfers to `receiver` the collateral that cut is worth at the oracle price, with no liquidation incentive (`LIF = 1`). Passing the borrower's complete share balance closes its debt position to zero, unless that whole balance is worth too little to seize any collateral, in which case the call reverts and the holding stays open. Such a holding can still be cleared with `repay` or `liquidate`. `onBehalf` and `borrower` may be the same address, so a lender that also borrows can settle against its own position.
+`settle` lets a lender exit through a borrower's position. The caller specifies an exact `borrowShares` cut. The core cancels those shares from `borrower`, burns the corresponding supply shares from `onBehalf`, and transfers to `receiver` the collateral that cut is worth at the oracle price, with no liquidation incentive (`LIF = 1`). Passing the borrower's complete share balance closes its debt position to zero, unless that whole balance is worth too little to seize any collateral, in which case the call reverts and the holding stays open — with one exception, the **dust close**: passing the whole balance is admitted even when it seizes nothing, so settlement can close a holding that buys no collateral though it can never slice one. Anything short of the whole balance still reverts and stays open, clearable only with `repay` or `liquidate`. `onBehalf` and `borrower` may be the same address, so a lender that also borrows can settle against its own position.
 
 Settlement is not an exact value swap. The debt removal prices the cut rounding up while the seizure prices the same cut rounding down, so the seizure can rest on a value one loan-asset unit below the debt canceled. That gap is borne by the settling side, which burns supply for the rounded-up amount while `receiver` collects collateral for the rounded-down one.
 
@@ -112,8 +112,17 @@ The core derives the remaining amounts in this order:
 3. `seizedAssets = borrowShares.toAssetsDown(totalBorrowAssets, totalBorrowShares).mulDivDown(ORACLE_PRICE_SCALE, oraclePrice)`.
    - The seizure prices the same share cut rounding down, and the price conversion rounds down again, so settlement never seizes more collateral than the canceled debt is worth at the oracle price. `liquidate` derives a share-specified seizure the same way, from the repaid shares valued rounding down.
    - A cut whose rounded-down value buys less than one collateral unit at the oracle price seizes nothing and reverts `settlement slice too small`. The floor on a settleable cut is therefore the loan-asset value of one collateral unit, which rises as the collateral grows more valuable relative to the loan token.
+   - The **dust close** is the one exception: settlement may *close* a holding that buys no collateral, but never *slice* one. When the cut is the borrower's whole remaining holding, a zero seizure is admitted and the position closes with no collateral moving. Such a holding is unreachable by any smaller cut and a sub-unit `repay` leaves one behind, so without the exception it could never be settled at all. The close costs the settling side `borrowAssetsCanceled` with nothing collected against it, and that cost is inside the per-call rounding cost every settle already carries, at every price and with no threshold to tune:
 
-No loan tokens move. `totalSupplyAssets` falls by `borrowAssetsCanceled` and `totalBorrowAssets` falls by the same amount floored at zero, so outside the one-unit overshoot both totals move together and free liquidity is invariant. In the overshoot case the floor leaves free liquidity one unit lower, which the market must already hold or the checked supply write reverts. The borrower's exact share delta, the lender's derived share delta, and the collateral delta are included in the `Settle` hook payload before any accounting writes. A controller that recomputes post-cut totals from that payload has to apply the same zero floor to `totalBorrowAssets` rather than subtracting directly.
+     ```
+     seizedAssets == 0  ⟺  seizeBasis * ORACLE_PRICE_SCALE < oraclePrice
+     borrowAssetsCanceled <= seizeBasis + 1
+     ⟹  borrowAssetsCanceled * ORACLE_PRICE_SCALE < oraclePrice + ORACLE_PRICE_SCALE
+     ```
+
+     A zero seizure is itself the statement that the canceled amount is worth under one collateral unit, and the upward valuation adds at most one loan unit on top. Requiring the close is what bounds the exception rather than any cap on the amount: a position can be closed once, and a slice of one still reverts, so nothing can be drained a free unit at a time. The cost falls entirely on the settling side, which burns supply for an amount it collects no collateral against; the other lenders are unaffected, since the burn still rounds up. The canceled amount is bounded by the loan-asset value of one collateral unit, which grows as the collateral grows more valuable per unit — the same asymmetry that makes the ordinary per-call gap large in collateral units when collateral is cheap.
+
+No loan tokens move, and the collateral transfer is skipped whenever the seizure is zero, so a collateral token that rejects zero-value transfers cannot make such a position unclosable. `totalSupplyAssets` falls by `borrowAssetsCanceled` and `totalBorrowAssets` falls by the same amount floored at zero, so outside the one-unit overshoot both totals move together and free liquidity is invariant. In the overshoot case the floor leaves free liquidity one unit lower, which the market must already hold or the checked supply write reverts. The borrower's exact share delta, the lender's derived share delta, and the collateral delta are included in the `Settle` hook payload before any accounting writes. A controller that recomputes post-cut totals from that payload has to apply the same zero floor to `totalBorrowAssets` rather than subtracting directly.
 
 The core enforces `borrowShares <= position[id][borrower].borrowShares` and `supplySharesBurned <= position[id][onBehalf].supplyShares`. Settlement can only be enabled on a market with a non-zero controller, and its `Settle` hook may impose additional eligibility rules by returning or reverting.
 
@@ -121,7 +130,7 @@ The pre-resolution checks run in this order: market exists, settlement is enable
 
 1. `settlement exceeds debt` — the exact input exceeds the borrower's debt shares.
 2. `settlement exceeds supply` — the derived upward-rounded supply burn exceeds `onBehalf`'s owned supply shares.
-3. `settlement slice too small` — the derived seizure is zero, either because the cut's rounded-down asset value is zero or because the price conversion floors the seizure to zero.
+3. `settlement slice too small` — the derived seizure is zero, either because the cut's rounded-down asset value is zero or because the price conversion floors the seizure to zero, and the cut does not close the borrower's whole remaining holding.
 4. `settlement exceeds collateral` — the derived seizure exceeds the borrower's collateral.
 
 **Exact share writes, a floored debt-asset write.** The two gates constrain different things, so the two asset decrements are not symmetric.
@@ -699,7 +708,7 @@ function settle(
 | `borrowSharesCanceled` | `uint256` | The count of `borrower`'s debt shares canceled. |
 | `supplySharesBurned` | `uint256` | The amount of `onBehalf`'s supply shares burned. |
 
-Cancels exactly `borrowShares` from `borrower`, derives the corresponding debt assets and `onBehalf` supply-share burn with upward rounding, and seizes to `receiver` the collateral that cut is worth with downward rounding. The gap between the two valuations is at most one loan-asset unit and it is borne by the settling side, so a cut that buys less than one collateral unit at the oracle price seizes nothing and reverts. Passing the borrower's complete debt-share balance closes the debt position to zero, unless that balance itself falls under that floor.
+Cancels exactly `borrowShares` from `borrower`, derives the corresponding debt assets and `onBehalf` supply-share burn with upward rounding, and seizes to `receiver` the collateral that cut is worth with downward rounding. The gap between the two valuations is at most one loan-asset unit and it is borne by the settling side, so a cut that buys less than one collateral unit at the oracle price seizes nothing and reverts. Passing the borrower's complete debt-share balance closes the debt position to zero even when that balance itself falls under the floor: the core admits a zero seizure for a cut that closes the position, never for one that slices it.
 
 `msg.sender` must be authorized to manage `onBehalf`'s positions.
 
@@ -1739,7 +1748,7 @@ Emitted on a successful `settle`.
 | `CONTROLLER_MISMATCH` | `"controller mismatch"` | Thrown when a controller is bound whose `marketId` does not match the market. |
 | `SETTLEMENT_DISABLED` | `"settlement disabled"` | Thrown when `settle` is called on a market that did not opt into it. |
 | `SETTLEMENT_EXCEEDS_SUPPLY` | `"settlement exceeds supply"` | Thrown when settlement would burn more supply shares than `onBehalf` owns. |
-| `SETTLEMENT_SLICE_TOO_SMALL` | `"settlement slice too small"` | Thrown when the settlement slice is too small to seize any collateral (rounds to zero). |
+| `SETTLEMENT_SLICE_TOO_SMALL` | `"settlement slice too small"` | Thrown when the settlement slice is too small to seize any collateral (rounds to zero), unless the cut closes the borrower's whole remaining holding. |
 | `SETTLEMENT_EXCEEDS_COLLATERAL` | `"settlement exceeds collateral"` | Thrown when the settlement slice would seize more than the borrower's collateral. |
 | `SETTLEMENT_EXCEEDS_DEBT` | `"settlement exceeds debt"` | Thrown when the settlement slice would cancel more than the borrower's debt. |
 | `ALREADY_INITIALIZED` | `"already initialized"` | Thrown when `initialize` is called after the contract is already initialized. |

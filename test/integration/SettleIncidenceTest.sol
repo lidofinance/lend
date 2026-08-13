@@ -238,46 +238,159 @@ contract SettleDebtFloorTest is BaseTestWithController {
     }
 }
 
-/// @dev A debt holding worth less than one loan-asset unit cannot be settled at all, because the seizure
-///      prices it down to zero. It stays open and must be cleared with `repay` or `liquidate`.
+/// @dev The dust close. A debt worth less than one collateral unit seizes nothing, so `settle` may close such
+///      a position but may never cut a piece off it. Without this, the position could never be settled at all:
+///      a smaller cut seizes nothing either, and `repay` can leave one behind. The lender pays the canceled
+///      amount and gets no collateral. That cost fits the per-call bound of `SettleRoundingAccumulationTest`,
+///      because a zero seizure means the debt is worth less than one collateral unit.
 contract SettleDustHoldingTest is BaseTestWithController {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
     using SharesMathLib for uint256;
     using MarketParamsLib for MarketParams;
 
-    function testDustPositionCannotBeClosed() public {
-        MarketParams memory p = MarketParams({
+    ControllerMock internal ctrl;
+
+    /// @dev A fresh controlled market at `price`, with `address(this)` lending `supplied` and BORROWER
+    ///      borrowing `borrowed` against `collateral`.
+    function _market(uint256 lltv, uint256 price, uint256 supplied, uint256 collateral, uint256 borrowed)
+        internal
+        returns (MarketParams memory params, Id marketId)
+    {
+        params = MarketParams({
             loanToken: address(loanToken),
             collateralToken: address(collateralToken),
             oracle: address(oracle),
             irm: address(irm),
-            lltv: 0.91 ether
+            lltv: lltv
         });
-        Id i = p.id();
-        ControllerMock c = new ControllerMock(i);
+        marketId = params.id();
+        ctrl = new ControllerMock(marketId);
         vm.prank(OWNER);
-        _lido().createMarket(p, address(c), true);
-        oracle.setPrice(ORACLE_PRICE_SCALE);
+        _lido().createMarket(params, address(ctrl), true);
+        oracle.setPrice(price);
 
-        _supplyAs(p, address(this), 1000);
-        _borrowAs(p, BORROWER, 1e18, 100);
+        _supplyAs(params, address(this), supplied);
+        _borrowAs(params, BORROWER, collateral, borrowed);
+    }
 
-        // Repay all but a sub-unit sliver of shares.
-        uint256 held = morpho.borrowShares(i, BORROWER);
+    /// @dev First case: `repay` leaves less than one loan unit of debt. The shares value DOWN to zero, so
+    ///      there is no basis to price a seizure from.
+    function testShareDustHoldingClosesForZeroCollateral() public {
+        (MarketParams memory p, Id mid) = _market(0.91 ether, ORACLE_PRICE_SCALE, 1000, 1e18, 100);
+
+        uint256 held = morpho.borrowShares(mid, BORROWER);
         loanToken.setBalance(BORROWER, 1000);
         vm.startPrank(BORROWER);
         loanToken.approve(address(morpho), type(uint256).max);
-        morpho.repay(p, 0, held - 500_000, BORROWER, hex""); // leaves 500_000 shares = 0.5 asset units
+        morpho.repay(p, 0, held - 500_000, BORROWER, hex""); // leaves 500_000 shares = half a loan unit
         vm.stopPrank();
 
-        uint256 dust = morpho.borrowShares(i, BORROWER);
-        emit log_named_uint("shares left", dust);
-        emit log_named_uint("valued DOWN", dust.toAssetsDown(morpho.totalBorrowAssets(i), morpho.totalBorrowShares(i)));
-        emit log_named_uint("valued UP  ", dust.toAssetsUp(morpho.totalBorrowAssets(i), morpho.totalBorrowShares(i)));
+        uint256 dust = morpho.borrowShares(mid, BORROWER);
+        assertEq(
+            dust.toAssetsDown(morpho.totalBorrowAssets(mid), morpho.totalBorrowShares(mid)), 0, "values DOWN to nothing"
+        );
+        assertEq(dust.toAssetsUp(morpho.totalBorrowAssets(mid), morpho.totalBorrowShares(mid)), 1, "and UP to one unit");
+
+        uint256 collateralBefore = morpho.collateral(mid, BORROWER);
+        uint256 receiverBefore = collateralToken.balanceOf(RECEIVER);
+        uint256 lenderSharesBefore = morpho.supplyShares(mid, address(this));
+        uint256 tsaBefore = morpho.totalSupplyAssets(mid);
+
+        (uint256 seized, uint256 canceled, uint256 sharesCanceled, uint256 burned) =
+            _lido().settle(p, dust, address(this), BORROWER, RECEIVER);
+
+        assertEq(seized, 0, "no collateral backs the unit");
+        assertEq(canceled, 1, "one loan unit canceled");
+        assertEq(sharesCanceled, dust, "the whole holding");
+        assertEq(morpho.borrowShares(mid, BORROWER), 0, "position closed");
+        assertEq(morpho.totalBorrowShares(mid), 0, "market debt shares zeroed");
+        assertEq(morpho.totalBorrowAssets(mid), 0, "market debt assets zeroed");
+
+        // The borrower keeps every collateral unit: the close forgives, it does not seize.
+        assertEq(morpho.collateral(mid, BORROWER), collateralBefore, "collateral untouched");
+        assertEq(collateralToken.balanceOf(RECEIVER), receiverBefore, "receiver paid nothing");
+
+        // The whole cost lands on the settling lender, which burns supply for the unit it is not paid for.
+        assertEq(morpho.supplyShares(mid, address(this)), lenderSharesBefore - burned, "lender burned the unit");
+        assertEq(morpho.totalSupplyAssets(mid), tsaBefore - 1, "supply total down by exactly the unit");
+
+        // Unrepeatable: closing the position is what spends the allowance.
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_EXCEEDS_DEBT));
+        _lido().settle(p, 1, address(this), BORROWER, RECEIVER);
+    }
+
+    /// @dev Second case: the collateral is expensive, so the whole debt buys no collateral unit. Fuzzed over
+    ///      the price and over the debt, up to the largest debt that still seizes nothing. Whatever it costs,
+    ///      it fits the per-call bound, because a zero seizure means the debt is worth less than one unit.
+    function testPricedOutHoldingClosesForZeroCollateralFuzz(uint256 priceSeed, uint256 debtSeed) public {
+        uint256 price = bound(priceSeed, 2 * ORACLE_PRICE_SCALE, MAX_COLLATERAL_PRICE);
+        // The debt seizes nothing as long as it is worth less than one collateral unit.
+        uint256 debt = bound(debtSeed, 1, price / ORACLE_PRICE_SCALE - 1);
+        (MarketParams memory p, Id mid) = _market(0.9 ether, price, debt, 1e18, debt);
+
+        uint256 held = morpho.borrowShares(mid, BORROWER);
+        uint256 collateralBefore = morpho.collateral(mid, BORROWER);
+        uint256 tsaBefore = morpho.totalSupplyAssets(mid);
+
+        (uint256 seized, uint256 canceled,,) = _lido().settle(p, held, address(this), BORROWER, RECEIVER);
+
+        assertEq(seized, 0, "the whole debt buys less than one collateral unit");
+        assertEq(canceled, debt, "the whole debt canceled");
+        assertEq(morpho.borrowShares(mid, BORROWER), 0, "position closed");
+        assertEq(morpho.collateral(mid, BORROWER), collateralBefore, "collateral untouched");
+        assertEq(morpho.totalSupplyAssets(mid), tsaBefore - canceled, "the settling lender ate the whole amount");
+
+        // The same bound SettleRoundingAccumulationTest checks, here on a call that seizes nothing.
+        uint256 lossScaled = canceled * ORACLE_PRICE_SCALE - seized * price;
+        assertLt(lossScaled, ORACLE_PRICE_SCALE + price, "inside the ordinary per-call bound");
+    }
+
+    /// @dev Only a close is allowed. Any smaller cut still reverts, so nobody can take a position apart one
+    ///      free unit at a time.
+    function testDustPartialCutStillRevertsFuzz(uint256 cutSeed) public {
+        (MarketParams memory p, Id mid) = _market(0.9 ether, 2 * ORACLE_PRICE_SCALE, 10, 1e18, 1);
+
+        uint256 held = morpho.borrowShares(mid, BORROWER);
+        uint256 cut = bound(cutSeed, 1, held - 1);
 
         vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL));
-        _lido().settle(p, dust, address(this), BORROWER, RECEIVER);
-        emit log_string("-> full close of a sub-unit position REVERTS");
+        _lido().settle(p, cut, address(this), BORROWER, RECEIVER);
+    }
+
+    /// @dev Where the exception stops, on one market. Two of the three units buy no collateral, and that cut
+    ///      reverts because it does not close the position. The whole three units are worth exactly one
+    ///      collateral unit, so the close seizes and takes the normal path instead.
+    function testZeroSeizureBoundaryFallsBackToOrdinaryPath() public {
+        (MarketParams memory p, Id mid) = _market(0.9 ether, 3 * ORACLE_PRICE_SCALE, 10, 1e18, 3);
+        uint256 held = morpho.borrowShares(mid, BORROWER);
+
+        assertEq(_seizedForShares(mid, held * 2 / 3), 0, "two of the three units buy nothing");
+        vm.expectRevert(bytes(ErrorsLib.SETTLEMENT_SLICE_TOO_SMALL));
+        _lido().settle(p, held * 2 / 3, address(this), BORROWER, RECEIVER);
+
+        (uint256 seized, uint256 canceled,,) = _lido().settle(p, held, address(this), BORROWER, RECEIVER);
+        assertEq(canceled, 3, "three loan units canceled");
+        assertEq(seized, 1, "which is exactly one collateral unit, so no exception was needed");
+    }
+
+    /// @dev The controller sees the zero seizure in the payload, so it can still refuse the close.
+    function testDustCloseHookSeesZeroSeizureAndCanVeto() public {
+        (MarketParams memory p, Id mid) = _market(0.9 ether, 2 * ORACLE_PRICE_SCALE, 10, 1e18, 1);
+        uint256 held = morpho.borrowShares(mid, BORROWER);
+
+        ctrl.setRevertOn(ILidoLendMarketController.HookEvent.Settle, true);
+        vm.expectRevert("blocked by controller");
+        _lido().settle(p, held, address(this), BORROWER, RECEIVER);
+        assertEq(morpho.borrowShares(mid, BORROWER), held, "veto left the holding open");
+
+        ctrl.setRevertOn(ILidoLendMarketController.HookEvent.Settle, false);
+        _lido().settle(p, held, address(this), BORROWER, RECEIVER);
+
+        ILidoLendMarketController.SettleHookData memory d =
+            abi.decode(ctrl.lastData(), (ILidoLendMarketController.SettleHookData));
+        assertEq(d.seizedAssets, 0, "hook saw the zero seizure");
+        assertEq(d.borrowAssetsCanceled, 1, "hook saw the single canceled unit");
+        assertEq(d.borrowSharesCanceled, held, "hook saw the whole holding");
     }
 }

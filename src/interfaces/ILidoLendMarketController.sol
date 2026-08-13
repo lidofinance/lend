@@ -126,7 +126,11 @@ interface ILidoLendMarketController {
     /// the same floor instead of subtracting directly.
     /// @param borrowSharesCanceled The borrow shares burned from borrower, computed in core.
     /// @param seizedAssets The collateral-token amount seized, computed in core. This is the canceled shares
-    /// priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`.
+    /// priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`. Warning: it
+    /// is zero when the cut closes a position worth less than one collateral unit, which is the only cut the
+    /// core admits with no collateral leg. A controller that divides by this value must handle zero, and one
+    /// that drains its own books by it must skip the call. A controller that rejects such a cut leaves the
+    /// position open, and only `repay` or `liquidate` can clear it then.
     struct SettleHookData {
         address caller;
         address onBehalf;

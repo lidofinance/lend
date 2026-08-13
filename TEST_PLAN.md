@@ -14,9 +14,9 @@ Coverage (`forge coverage --report summary --no-match-coverage "test|mocks"`) is
 
 | File | Lines | Statements | Branches | Functions |
 |---|---|---|---|---|
-| `src/LidoLend.sol` | 100% (274/274) | 100% (290/290) | 100% (139/139) | 100% (29/29) |
+| `src/LidoLend.sol` | 100% (266/266) | 100% (281/281) | 100% (138/138) | 100% (28/28) |
 | `src/libraries/**` (8 files) | 100% (146/146) | 100% (142/142) | 100% (16/16) | 100% (52/52) |
-| **Total** | **100% (420/420)** | **100% (432/432)** | **100% (155/155)** | **100% (81/81)** |
+| **Total** | **100% (412/412)** | **100% (423/423)** | **100% (154/154)** | **100% (80/80)** |
 
 Three revert branches upstream left untested (`setFee` / `setFeeRecipient` `ALREADY_SET`, `safeTransfer` on a reverting token) are closed by coverage-closure tests under the `LIDO FORK TESTS` separators in `OnlyOwnerIntegrationTest` and `SafeTransferLibTest`.
 
@@ -76,7 +76,7 @@ The lock is a single global flag, held for the length of the hook and released b
 
 ## 2. `settle`
 
-**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the derived `supplySharesBurned` to be owned by `onBehalf`, and the bound controller's hook runs before the write and may revert. The debt assets and the supply burn price the cut up while the seizure prices it down, so the gap between the two valuations falls on the settling side and a cut that buys less than one collateral unit at the oracle price is rejected.
+**What changed.** A new fallback exit: it cancels a borrower's debt against a lender's supply shares and transfers the seized collateral to a receiver, at the oracle price with no liquidation incentive. It is usable only on a controller-bound market that opted in at creation. The core requires the derived `supplySharesBurned` to be owned by `onBehalf`, and the bound controller's hook runs before the write and may revert. The debt assets and the supply burn price the cut up while the seizure prices it down, so the gap between the two valuations falls on the settling side and a cut that buys less than one collateral unit at the oracle price is rejected — except when the cut closes the position: settlement may close a holding with nothing to seize, but never slice one.
 
 `SettleMathTest` holds the arithmetic, rounding, and boundary cases, `SettleIntegrationTest` the access-control, hook/event, and lifecycle cases, `SettleIncidenceTest` and `SettleRoundingAccumulationTest` who bears the rounding and how large it can get, and `SettleInvariantTest` the stateful fuzz.
 
@@ -99,7 +99,7 @@ Each cap has its own revert string, fuzzed across its whole over-cap window rath
 | Seizing past the borrower's collateral reverts | `testSettleOverCapCollateral` |
 | Cancelling past the borrower's debt reverts | `testSettleOverCapBorrowShares` |
 | A slice seizing zero collateral reverts | `testSettleOverCapZeroCollateral` |
-| An exact full-share close does not bypass the zero-seize guard | `testSettleCloseBlockedWhenSeizeRoundsToZero` |
+| A cut that seizes nothing is admitted when it closes the position and rejected one share short of it (see "Dust close") | `testSettleCloseAtZeroSeizureClosesButSliceReverts` |
 | Passing side: a seizure equal to the whole collateral succeeds when the hook returns, stripping it to zero while the debt stays open | `testSettleSeizeExactlyAllCollateral` |
 | Passing side: the smallest non-zero seizure succeeds | `testSettleSliceSeizureBoundary` |
 | At a non-round supply-share price, a full close whose rounded burn exceeds ownership reverts with `SETTLEMENT_EXCEEDS_SUPPLY` and leaves both positions unchanged | `testSettleFullCloseExceedsOwnedSupply` |
@@ -128,16 +128,28 @@ The arithmetic tests pin the amounts. These pin who bears each rounding, which i
 | A borrower with no debt cannot be settled against for any cut, even on a market where one raw borrow share is worth more than one asset unit | `testDebtlessBorrowerCannotBeSettledFuzz` |
 | A zero cut is rejected before anything is derived | `testZeroCutRejected` |
 | The debt total's zero floor is exercised: a cut valuing up to exactly one unit above the total floors the total at zero instead of underflowing, and the supply side takes the full amount | `testZeroFloorSubIsExercised` |
-| A debt holding that buys less than one collateral unit at the oracle price cannot be settled at all and stays open for `repay` or `liquidate` | `testDustPositionCannotBeClosed` |
 
 ### Rounding magnitude (`SettleRoundingAccumulationTest`)
 
-The incidence tests pin who pays each rounding. These bound how much it can be and show it does not compound: `settle` rounds against the settling side twice — the cut is valued up into `borrowAssetsCanceled` but down as the seizure basis (< 1 loan wei), and that basis converts to collateral with `mulDivDown` (< 1 collateral wei). So one call costs its caller under one unit of each side, stated exactly in integers as `canceled * SCALE - seized * price < SCALE + price`. The bound carries no magic constant and no price dependence, but in collateral wei it reads `SCALE / price + 1`, so "one wei" can be trillions of collateral wei when collateral is cheap per unit.
+The incidence tests pin who pays each rounding. These bound how much it can be and show it does not compound. The bound covers settles that *seize collateral*; a closing cut that seizes nothing costs its caller the whole canceled amount by choice rather than by rounding, and is covered by the section below. `settle` rounds against the settling side twice — the cut is valued up into `borrowAssetsCanceled` but down as the seizure basis (< 1 loan wei), and that basis converts to collateral with `mulDivDown` (< 1 collateral wei). So one call costs its caller under one unit of each side, stated exactly in integers as `canceled * SCALE - seized * price < SCALE + price`. The bound carries no magic constant and no price dependence, but in collateral wei it reads `SCALE / price + 1`, so "one wei" can be trillions of collateral wei when collateral is cheap per unit.
 
 | Verifies | Test |
 |---|---|
 | Across the full oracle price range, a fuzzed fee, fuzzed accrual (both the supply and the borrow share rate at non-round values), fuzzed debt and fuzzed cut sizes: no single call costs its caller more than one loan wei plus one collateral wei, and N calls cost at most N of those — the loss accumulates linearly, it does not compound | `testLenderLossPerCallBoundedFuzz` |
 | A worked instance on a real pair (18-decimal collateral at $2500 against a 2-decimal loan at $1, where `SCALE / price` is the exact integer 4e12, isolating the basis rounding): 50 misaligned cuts each pay one loan wei of basis — 2e14 collateral wei, about 50 cents — while the single aligned cut of the same total size escapes it entirely. Also keeps the fuzz bound from passing vacuously by pinning a nonzero loss | `testWorkedCaseOneLoanWeiIsFourTrillionCollateralWei` |
+
+### Dust close (`SettleDustHoldingTest`, in `SettleIncidenceTest.sol`)
+
+Settlement may **close** a holding that buys no collateral, but never **slice** one. No smaller cut reaches such a holding and a sub-unit `repay` leaves one behind, so without the exception it could never be settled at all. It needs no threshold to stay inside the per-call bound above: a zero seizure is itself the statement that the canceled amount is worth under one collateral unit, and the up valuation adds at most one loan unit on top, so `canceled * SCALE < price + SCALE` at every price. Requiring the close is what bounds the exception — a position can be closed once, and a slice of one still reverts.
+
+| Verifies | Test |
+|---|---|
+| Share-dust route — a holding left below one unit by `repay`, which values *down* to nothing: the close seizes zero, cancels one unit, leaves every collateral unit with the borrower, burns the unit from the settling lender alone, and cannot be repeated | `testShareDustHoldingClosesForZeroCollateral` |
+| Priced-out route, fuzzed over both price and debt up to the largest holding that still seizes nothing — where the exception is worth the most: the whole debt is canceled, collateral is untouched, the settling lender absorbs the entire amount, and it stays inside the per-call bound | `testPricedOutHoldingClosesForZeroCollateralFuzz` |
+| The exception is for the close, not the cut: any cut short of the whole holding still reverts, so a position cannot be drained one free unit at a time | `testDustPartialCutStillRevertsFuzz` |
+| Where the exception stops: on one market a two-unit slice buys nothing and is rejected, while the whole three-unit holding is worth exactly one collateral unit and settles on the ordinary path, never reaching the exception | `testZeroSeizureBoundaryFallsBackToOrdinaryPath` |
+| The controller sees `seizedAssets == 0` in the hook payload and can veto the close, leaving the holding open | `testDustCloseHookSeesZeroSeizureAndCanVeto` |
+| The close on a drifted two-borrower market: admitted at the whole holding, rejected one share short, and the bystander borrower is untouched | `testSettleCloseAtZeroSeizureClosesButSliceReverts` (`SettleMathTest`) |
 
 ### Position closure (`SettleMathTest`, `SettleIntegrationTest`)
 

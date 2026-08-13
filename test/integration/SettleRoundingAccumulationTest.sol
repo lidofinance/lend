@@ -26,6 +26,10 @@ import "../BaseTestWithController.sol";
 ///      The bound has no magic constant and no price dependence: it is one unit of each side, whatever
 ///      those units happen to be worth. In collateral wei it reads `SCALE / price + 1`, which is why a
 ///      "one wei" rounding can still be trillions of collateral wei when collateral is cheap per unit.
+///
+///      SCOPE: this is the cost of a settle that seizes collateral. A closing cut that seizes nothing costs
+///      its caller the whole canceled amount, by choice and not by rounding, so it is not bounded here and
+///      `_affordableCut` leaves those cuts out. They are covered by `SettleDustHoldingTest`.
 contract SettleRoundingAccumulationTest is BaseTestWithController {
     using MathLib for uint256;
     using MorphoLib for IMorpho;
@@ -143,6 +147,8 @@ contract SettleRoundingAccumulationTest is BaseTestWithController {
         // Re-check the guards on the chosen cut, exactly as the core computes them.
         uint256 canceled = cut.toAssetsUp(tBA, tBS);
         if (canceled.toSharesUp(tSA, tSS) > lenderShares) return 0;
+        // A zero seizure is left out on purpose: such a cut is a close, and its cost is a choice rather than
+        // a rounding, so it belongs to SettleDustHoldingTest instead.
         uint256 seized = cut.toAssetsDown(tBA, tBS).mulDivDown(ORACLE_PRICE_SCALE, c.price);
         if (seized == 0 || seized > morpho.collateral(c.mid, BORROWER)) return 0;
 
@@ -151,8 +157,9 @@ contract SettleRoundingAccumulationTest is BaseTestWithController {
 
     /// @dev THE INVARIANT. Across the full oracle price range, a fuzzed fee, fuzzed accrual (so both the
     ///      supply and the borrow share rate sit at fuzzed non-round values), fuzzed debt size and fuzzed
-    ///      cut sizes: no single `settle` costs its caller more than one loan wei plus one collateral wei,
-    ///      and N calls cost at most N of those.
+    ///      cut sizes: no `settle` that seizes collateral costs its caller more than one loan wei plus one
+    ///      collateral wei, and N of them cost at most N of those. See SCOPE above for the closing cuts
+    ///      that seize nothing.
     function testLenderLossPerCallBoundedFuzz(
         uint256 priceSeed,
         uint256 feeSeed,
