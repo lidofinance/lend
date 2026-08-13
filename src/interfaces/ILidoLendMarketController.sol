@@ -115,22 +115,24 @@ interface ILidoLendMarketController {
     }
 
     /// @notice Payload for the `Settle` hook.
+    /// @dev Warning: `borrowAssetsCanceled` can exceed the market's `totalBorrowAssets` by one raw loan-token unit.
+    /// The core floors the new total at zero, so a controller reconstructing post-settlement state must do the same.
+    /// @dev Warning: `seizedAssets` applies two downward roundings: debt-share valuation and loan-to-collateral
+    /// conversion. Only the first difference is bounded by one raw loan-token unit. The second is less than one raw
+    /// collateral-token unit, whose loan-token value depends on token decimals and the oracle price.
     /// @param caller The settle call's msg.sender.
     /// @param onBehalf The address whose supply shares are burned.
     /// @param borrower The address whose debt is canceled and collateral seized.
     /// @param receiver The address receiving the seized collateral.
     /// @param supplySharesBurned The supply shares burned from onBehalf, after resolution.
-    /// @param borrowAssetsCanceled The loan-token debt canceled, computed in core. Warning: this is the canceled
-    /// shares priced up, so it can exceed the market's `totalBorrowAssets` by one unit, and the core floors that
-    /// total at zero when it applies the cut. A controller deriving post-cut state from this value must apply
-    /// the same floor instead of subtracting directly.
+    /// @param borrowAssetsCanceled The loan-token debt canceled, computed by pricing the canceled shares up.
     /// @param borrowSharesCanceled The borrow shares burned from borrower, computed in core.
-    /// @param seizedAssets The collateral-token amount seized, computed in core. This is the canceled shares
-    /// priced down, so it can be worth up to one loan-asset unit less than `borrowAssetsCanceled`. Warning: it
-    /// is zero when the cut closes a position worth less than one collateral unit, which is the only cut the
-    /// core admits with no collateral leg. A controller that divides by this value must handle zero, and one
-    /// that drains its own books by it must skip the call. A controller that rejects such a cut leaves the
-    /// position open, and only `repay` or `liquidate` can clear it then.
+    /// @param seizedAssets The collateral-token amount seized, computed by pricing the canceled shares down and then
+    /// converting the result to collateral with downward rounding. Warning: it is zero when the input closes a
+    /// holding worth less than one raw collateral unit, the only settlement the core admits with no collateral
+    /// output. A controller that divides by this value must handle zero, and one that drains its own books by it
+    /// must skip that call. A controller that rejects such a settlement leaves the holding open, and only `repay`
+    /// or `liquidate` can clear it then.
     struct SettleHookData {
         address caller;
         address onBehalf;
@@ -142,11 +144,17 @@ interface ILidoLendMarketController {
         uint256 seizedAssets;
     }
 
-    /// @notice The id of the single market this controller manages.
+    /// @notice The market id reported by this controller when it is bound.
+    /// @dev The core checks this value during market creation. It does not revalidate it on hooks or prevent a mutable
+    /// controller from being bound to more than one market.
     function marketId() external view returns (Id);
 
-    /// @notice Called by the core on each action listed in `HookEvent`, before the action's state changes
-    /// are applied.
+    /// @notice Called by the core on each action listed in `HookEvent`, before the requested action's own state
+    /// changes.
+    /// @dev Most actions accrue interest before this call, so the hook can observe accrual writes. `AccrueInterest`
+    /// dispatches before accrual, and `SupplyCollateral` does not accrue.
+    /// @dev This interface does not authenticate the caller. A production controller that trusts the payload or changes
+    /// state must require `msg.sender` to be the expected core contract.
     /// @param id The id of the market the action is performed on.
     /// @param hookEvent The action being performed.
     /// @param data The abi-encoded hook payload: the `HookData` struct corresponding to `hookEvent`.

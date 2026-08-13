@@ -1,33 +1,54 @@
 # LidoLend
 
-LidoLend is the lending core of the Lido Lending product: a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue) by Morpho Labs that keeps Morpho's isolated-market accounting and adds per-market controller hooks, a `settle` primitive, owner-gated market creation, and an upgradeable-proxy initializer.
+`LidoLend` is the shared lending core used by the Lido Lend product. It is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue). One contract stores many isolated markets. Each market has its own assets, positions, oracle, interest-rate model (IRM), and liquidation loan-to-value (LLTV), while all markets use the same accounting logic.
 
-This repository holds the core contract with its interfaces, libraries, and tests. Contracts are not deployed from here: [`lidofinance/lido-lend-markets`](https://github.com/lidofinance/lido-lend-markets) imports this repository as a subrepository and owns deployment, the proxy, the market controllers, and the rest of the product.
+Lenders supply a market's loan asset. Borrowers provide collateral and borrow that loan asset. Liquidators reduce unhealthy debt. The inherited Morpho rules define this accounting.
 
-## Documentation
+This fork adds four protocol boundaries:
 
-- [`SPECIFICATION.md`](./SPECIFICATION.md) — the normative specification of the fork's behavior, with the generated API reference.
-- [`FORK_NOTES.md`](./FORK_NOTES.md) — the fork record: the upstream pin, layout rules, the delta, and how to reproduce the diff.
-- [`TEST_PLAN.md`](./TEST_PLAN.md) — the property-to-test map and coverage.
-- [`morpho-blue-whitepaper.pdf`](./morpho-blue-whitepaper.pdf) — normative for the inherited Morpho Blue behavior.
+| Change | Purpose |
+| --- | --- |
+| Owner-gated market creation | The owner creates each market and binds its controller and settlement setting at creation. |
+| Controller hooks | A market-specific controller may accept or reject each hooked market action. |
+| `settle` | Burns a supply owner's shares to cancel exact borrower debt shares and sends the calculated collateral to a chosen receiver. |
+| Proxy initialization | The core can run behind a proxy while keeping EIP-712 signatures bound to the proxy address and chain. |
 
-## Repository structure
+## Start here
 
-[`LidoLend.sol`](./src/LidoLend.sol) is the core — upstream `src/Morpho.sol`, renamed; every other inherited file keeps its upstream path. The fork's own interfaces are [`ILidoLend.sol`](./src/interfaces/ILidoLend.sol) and [`ILidoLendMarketController.sol`](./src/interfaces/ILidoLendMarketController.sol). [`src/libraries/periphery`](./src/libraries/periphery) holds helper libraries for integrators, and [`src/mocks`](./src/mocks) contracts designed exclusively for testing.
+Read [SPECIFICATION.md](SPECIFICATION.md) first. It explains the system model, runtime behavior, settlement math, storage layout, and trust assumptions. Use [API_REFERENCE.md](API_REFERENCE.md) for the generated contract and controller API.
 
-## Developers
+Maintainer and audit references:
 
-Compilation, testing, and formatting with [forge](https://book.getfoundry.sh/getting-started/installation). `make doc` regenerates the API Reference section of `SPECIFICATION.md`.
+- [FORK_NOTES.md](FORK_NOTES.md) records the source delta from Morpho Blue.
+- [TEST_PLAN.md](TEST_PLAN.md) maps requirements to Foundry tests.
+- [certora/README.md](certora/README.md) describes the formal-verification model and its assumptions.
+- [SECURITY.md](SECURITY.md) gives the private vulnerability-reporting route.
+
+The source is authoritative. [`morpho-blue-whitepaper.pdf`](morpho-blue-whitepaper.pdf) explains the inherited design, and [SPECIFICATION.md](SPECIFICATION.md) documents this fork.
+
+## Repository boundary
+
+[`src/LidoLend.sol`](src/LidoLend.sol) is the core contract. It is the fork of upstream `src/Morpho.sol`. Fork-specific interfaces are [`ILidoLend.sol`](src/interfaces/ILidoLend.sol) and [`ILidoLendMarketController.sol`](src/interfaces/ILidoLendMarketController.sol).
+
+Deployment code, production proxy contracts, production controllers, vaults, oracles, and operational role assignments are outside this repository and are not specified here.
+
+## Development
+
+The repository uses [Foundry](https://book.getfoundry.sh/getting-started/installation).
+
+From a checkout with its submodules initialized:
+
+```sh
+forge build
+forge test
+```
+
+Run `make doc` after changing NatSpec. It builds the Solidity abstract syntax tree and regenerates [API_REFERENCE.md](API_REFERENCE.md).
 
 ## Audits
 
-The [audits](./audits/) folder contains the upstream Morpho Blue audits, covering the inherited code at the fork point. The fork's changes are not covered by them.
-
-## Security
-
-Report vulnerabilities in this repository or its deployments per [SECURITY.md](./SECURITY.md) (to Lido, not to upstream Morpho Labs).
+The [`audits/`](audits/) directory contains reports inherited from upstream. Each report covers only the commit and scope named in that report. Their presence does not imply coverage of later upstream changes or the Lido fork changes.
 
 ## License
 
-Files in this repository are publicly available under license `GPL-2.0-or-later`, see [`LICENSE`](./LICENSE).
-The previous license (BUSL-1.1) can be found [here](https://github.com/morpho-org/morpho-blue/blob/1bcfbfdfa284597ae526d082dd34bcd182d15d27/LICENSE) for reference.
+The core contracts use `GPL-2.0-or-later`. Individual SPDX headers govern each file; one retained test helper uses `GPL-3.0-or-later`. See [LICENSE](LICENSE) for the repository license terms and the historical BUSL notice.

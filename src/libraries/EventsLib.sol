@@ -163,7 +163,8 @@ library EventsLib {
     /// @param borrower The borrower whose debt and collateral are reduced.
     /// @param receiver The address that received the seized collateral.
     /// @param supplySharesBurned The supply shares burned from `onBehalf`.
-    /// @param borrowAssetsCanceled The borrow assets canceled from `borrower`.
+    /// @param borrowAssetsCanceled The upward-rounded asset value derived from the canceled borrower shares. The core
+    /// uses it for the supply reduction and the zero-floored reduction of total borrow assets.
     /// @param borrowSharesCanceled The borrow shares burned from `borrower`.
     /// @param seizedAssets The collateral seized from `borrower` and sent to `receiver`.
     event Settle(

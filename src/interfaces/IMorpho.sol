@@ -50,9 +50,9 @@ struct Signature {
 /// @dev Consider using the IMorpho interface instead of this one.
 interface IMorphoBase {
     /// @notice The EIP-712 domain separator.
-    /// @dev Warning: Every EIP-712 signed message based on this domain separator can be reused on chains sharing the
-    /// same chain id because the domain separator would be the same.
-    /// @dev The separator is recomputed on every call.
+    /// @dev The separator is recomputed from the current chain id and `address(this)` on every call.
+    /// @dev Warning: The domain does not distinguish deployments that have both the same chain id and the same contract
+    /// address. Nonce state and authorization deadlines still apply.
     function DOMAIN_SEPARATOR() external view returns (bytes32);
 
     /// @notice The owner of the contract.
@@ -87,7 +87,7 @@ interface IMorphoBase {
 
     /// @notice Sets the `newFee` for the given market `marketParams`.
     /// @param newFee The new fee, scaled by WAD.
-    /// @dev Warning: The recipient can be the zero address.
+    /// @dev Warning: If `feeRecipient` is the zero address, a non-zero fee mints inaccessible shares to that address.
     function setFee(MarketParams memory marketParams, uint256 newFee) external;
 
     /// @notice Sets `newFeeRecipient` as `feeRecipient` of the fee.
@@ -100,13 +100,13 @@ interface IMorphoBase {
     /// @dev Here is the list of assumptions on the market's dependencies (tokens, IRM and oracle) that guarantees
     /// Morpho behaves as expected:
     /// - The token should be ERC-20 compliant, except that it can omit return values on `transfer` and `transferFrom`.
-    /// - The token balance of Morpho should only decrease on `transfer` and `transferFrom`. In particular, tokens with
-    /// burn functions are not supported.
+    /// - The core's token balance should not decrease except through a transfer requested by the core. Arbitrary burns,
+    /// negative rebases, and similar balance changes are not supported.
     /// - The token should not re-enter Morpho on `transfer` nor `transferFrom`.
-    /// - The token balance of the sender (resp. receiver) should decrease (resp. increase) by exactly the given amount
-    /// on `transfer` and `transferFrom`. In particular, tokens with fees on transfer are not supported.
+    /// - A successful `transfer` or `transferFrom` should decrease the sender's balance and increase the receiver's
+    /// balance by exactly the requested amount. In particular, tokens with transfer fees are not supported.
     /// - The IRM should not re-enter Morpho.
-    /// - The oracle should return a price with the correct scaling.
+    /// - The oracle should return a strictly positive price with the correct scaling.
     /// - The oracle price should not be able to change instantly such that the new price is less than the old price
     /// multiplied by LLTV*LIF. In particular, if the loan asset is a vault that can receive donations, the oracle
     /// should not price its shares using the AUM.
@@ -135,9 +135,9 @@ interface IMorphoBase {
     /// @dev Supplying a large amount can revert for overflow.
     /// @dev Supplying an amount of shares may lead to supply more or fewer assets than expected due to slippage.
     /// Consider using the `assets` parameter to avoid this.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `Supply` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `Supply` hook after interest accrual
+    /// and before the supply-specific state changes. Every call that reaches hook dispatch checks the global hook lock,
+    /// including calls on markets without a controller. The controller may revert to reject the action.
     /// @param marketParams The market to supply assets to.
     /// @param assets The amount of assets to supply.
     /// @param shares The amount of shares to mint.
@@ -159,9 +159,10 @@ interface IMorphoBase {
     /// @dev Withdrawing an amount corresponding to more shares than supplied will revert for underflow.
     /// @dev It is advised to use the `shares` input when withdrawing the full position to avoid reverts due to
     /// conversion roundings between shares and assets.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `Withdraw` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `Withdraw` hook after interest
+    /// accrual and before the withdrawal-specific state changes. Every call that reaches hook dispatch checks the
+    /// global hook lock, including calls on markets without a controller. The controller may revert to reject the
+    /// action.
     /// @param marketParams The market to withdraw assets from.
     /// @param assets The amount of assets to withdraw.
     /// @param shares The amount of shares to burn.
@@ -185,9 +186,9 @@ interface IMorphoBase {
     /// @dev Borrowing a large amount can revert for overflow.
     /// @dev Borrowing an amount of shares may lead to borrow fewer assets than expected due to slippage.
     /// Consider using the `assets` parameter to avoid this.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `Borrow` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `Borrow` hook after interest accrual
+    /// and before the borrow-specific state changes. Every call that reaches hook dispatch checks the global hook lock,
+    /// including calls on markets without a controller. The controller may revert to reject the action.
     /// @param marketParams The market to borrow assets from.
     /// @param assets The amount of assets to borrow.
     /// @param shares The amount of shares to mint.
@@ -210,9 +211,9 @@ interface IMorphoBase {
     /// @dev It is advised to use the `shares` input when repaying the full position to avoid reverts due to conversion
     /// roundings between shares and assets.
     /// @dev An attacker can front-run a repay with a small repay making the transaction revert for underflow.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `Repay` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `Repay` hook after interest accrual
+    /// and before the repayment-specific state changes. Every call that reaches hook dispatch checks the global hook
+    /// lock, including calls on markets without a controller. The controller may revert to reject the action.
     /// @param marketParams The market to repay assets to.
     /// @param assets The amount of assets to repay.
     /// @param shares The amount of shares to burn.
@@ -232,9 +233,10 @@ interface IMorphoBase {
     /// `onMorphoSupplyCollateral` function with the given `data`.
     /// @dev Interest is not accrued since it's not required and it saves gas.
     /// @dev Supplying a large amount can revert for overflow.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `SupplyCollateral` hook
-    /// before applying the state changes (no interest is accrued), and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `SupplyCollateral` hook before the
+    /// collateral-specific state changes; this action does not accrue interest. Every call that reaches hook dispatch
+    /// checks the global hook lock, including calls on markets without a controller. The controller may reject the
+    /// action.
     /// @param marketParams The market to supply collateral to.
     /// @param assets The amount of collateral to supply.
     /// @param onBehalf The address that will own the increased collateral position.
@@ -245,9 +247,9 @@ interface IMorphoBase {
     /// @notice Withdraws `assets` of collateral on behalf of `onBehalf` and sends the assets to `receiver`.
     /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
     /// @dev Withdrawing an amount corresponding to more collateral than supplied will revert for underflow.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `WithdrawCollateral` hook
-    /// after interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `WithdrawCollateral` hook after
+    /// interest accrual and before the collateral-specific state changes. Every call that reaches hook dispatch checks
+    /// the global hook lock, including calls on markets without a controller. The controller may reject the action.
     /// @param marketParams The market to withdraw collateral from.
     /// @param assets The amount of collateral to withdraw.
     /// @param onBehalf The address of the owner of the collateral position.
@@ -262,9 +264,9 @@ interface IMorphoBase {
     /// @dev Seizing more than the collateral balance will underflow and revert without any error message.
     /// @dev Repaying more than the borrow balance will underflow and revert without any error message.
     /// @dev An attacker can front-run a liquidation with a small repay making the transaction revert for underflow.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `Liquidate` hook after
-    /// interest accrual and before applying the state changes, and reverts when reentered from a controller hook.
-    /// The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `Liquidate` hook after interest
+    /// accrual and before the liquidation-specific state changes. Every call that reaches hook dispatch checks the
+    /// global hook lock, including calls on markets without a controller. The controller may reject the action.
     /// @param marketParams The market of the position.
     /// @param borrower The owner of the position.
     /// @param seizedAssets The amount of collateral to seize.
@@ -287,6 +289,8 @@ interface IMorphoBase {
     /// - `flashFee` is zero.
     /// - `maxFlashLoan` is the token's balance of this contract.
     /// - The receiver of `assets` is the caller.
+    /// @dev Warning: This function does not dispatch a controller hook or check the global hook lock. A controller can
+    /// call it while another hooked action is waiting for that controller to return.
     /// @param token The token to flash loan.
     /// @param assets The amount of assets to flash loan.
     /// @param data Arbitrary data to pass to the `onMorphoFlashLoan` callback.
@@ -306,8 +310,9 @@ interface IMorphoBase {
     function setAuthorizationWithSig(Authorization calldata authorization, Signature calldata signature) external;
 
     /// @notice Accrues interest for the given market `marketParams`.
-    /// @dev Warning: On a market with a controller, this function calls the controller's `AccrueInterest` hook
-    /// before accruing interest, and reverts when reentered from a controller hook. The hook itself may revert.
+    /// @dev Warning: On a controlled market, this function calls the controller's `AccrueInterest` hook before accruing
+    /// interest. Every call that reaches hook dispatch checks the global hook lock, including calls on markets without
+    /// a controller. The controller may revert to reject the action.
     function accrueInterest(MarketParams memory marketParams) external;
 
     /// @notice Returns the data stored on the different `slots`.

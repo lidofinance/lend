@@ -198,7 +198,7 @@ contract SettleDebtFloorTest is BaseTestWithController {
         _lido().createMarket(p, address(ctrl), true);
         oracle.setPrice(ORACLE_PRICE_SCALE);
 
-        // No time is warped anywhere, so the IRM never accrues and the index moves only through settle.
+        // No time is warped, so the IRM never accrues; the borrow index changes only through the repay below.
         _supplyAs(p, address(this), 100);
         _borrowAs(p, BORROWER, 1e18, 100);
 

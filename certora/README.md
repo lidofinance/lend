@@ -1,290 +1,117 @@
-This folder contains the verification of LidoLend using CVL, Certora's Verification Language.
+# LidoLend formal verification
 
-LidoLend inherits Morpho Blue's accounting model and adds owner-gated market creation, immutable per-market controllers, controller hooks, and settlement. The inherited core concepts are described in the [Morpho Blue whitepaper](../morpho-blue-whitepaper.pdf).
-The specifications cover both the inherited accounting properties and the LidoLend-specific behavior.
-Every configuration uses solc 0.8.35 with the Cancun EVM target required by the transient hook lock.
-We first give a [high-level description](#high-level-description) of the verification and then describe the [folder and file structure](#folder-and-file-structure) of the specification files.
+This directory contains Certora Verification Language (CVL) rules for inherited Morpho accounting and the LidoLend fork changes. Read [SPECIFICATION.md](../SPECIFICATION.md) before using them. This is a rule and model inventory, not a proof-status report: a successful run establishes only the property expressed by that rule under its configured summaries and assumptions.
 
-# High-level description
+Every helper, configuration, and workflow uses Solidity 0.8.36 with the Cancun EVM target, matching the core.
 
-LidoLend allows users to take out collateralized loans on ERC20 tokens.
+## Verification model
 
-## ERC20 tokens and transfers
+### Core and markets
 
-For a given market, LidoLend relies on the fact that the tokens involved respect the ERC20 standard.
-In particular, in case of a transfer, it is assumed that the balance of LidoLend increases or decreases (depending if it is the recipient or the sender) by the amount transferred.
+`LidoLend` is modeled as one core contract containing many markets. For each token, the `idleAmount` ghost aggregates recorded collateral in markets using it as collateral plus `totalSupplyAssets - totalBorrowAssets` in markets using it as the loan token. The rules require that aggregate not exceed the modeled core balance. A separate per-market invariant requires `totalBorrowAssets <= totalSupplyAssets`. Both depend on the token-transfer model below.
 
-The file [Transfer.spec](specs/Transfer.spec) defines a summary of the transfer functions.
-This summary is taken as the reference implementation to check that the balance of the LidoLend contract changes as expected.
+### Token transfers
 
-```solidity
-function summarySafeTransferFrom(address token, address from, address to, uint256 amount) {
-    if (from == currentContract) {
-        balance[token] = require_uint256(balance[token] - amount);
-    }
-    if (to == currentContract) {
-        balance[token] = require_uint256(balance[token] + amount);
-    }
-}
+The transfer summaries assume exact-balance ERC-20 behavior: a successful transfer changes the core balance by exactly the requested amount. Fee-on-transfer, burn-on-transfer, and rebasing tokens are outside the model.
+
+Three dispatch contracts cover common return-value behavior:
+
+- [`ERC20Standard`](dispatch/ERC20Standard.sol) returns a boolean and reverts on insufficient balance or allowance.
+- [`ERC20NoRevert`](dispatch/ERC20NoRevert.sol) returns `false` instead of reverting.
+- [`ERC20USDT`](dispatch/ERC20USDT.sol) omits the return value.
+
+[`Transfer.spec`](specs/Transfer.spec) summarizes the safe-transfer library and checks its failure handling.
+
+### Accounting value bounds
+
+[`AssetsAccounting.spec`](specs/AssetsAccounting.spec) checks share-conversion bounds on successful inherited entry and exit operations. With no interest elapsed during the checked transition, the rules bound supply gains and withdrawals by the corresponding asset input or pre-call position value. Borrow-by-shares cannot increase upward-rounded debt by less than the assets received, and a closing repayment cannot pay less than the pre-call upward-rounded debt. Collateral additions are exact and withdrawals cannot exceed the recorded balance.
+
+These are per-operation bounds for `supply`, `withdraw`, `borrow`, `repay`, `supplyCollateral`, and `withdrawCollateral`. Settlement has different actors and rounding allocation, so [`Settlement.spec`](specs/Settlement.spec) models it separately.
+
+### Fee, timestamp, and input bounds
+
+The `feeInRange` invariant in [`ConsistentState.spec`](specs/ConsistentState.spec) and [`ExchangeRate.spec`](specs/ExchangeRate.spec) constrains every market fee to `MAX_FEE`, which is 25%. The `noTimeTravel` rule assumes `lastUpdate <= block.timestamp` before an arbitrary non-view call and checks that a successful call preserves that relation.
+
+[`Reverts.spec`](specs/Reverts.spec) checks invalid-input rejection. For example, `supplyInputValidation` requires exactly one of `assets` and `shares` to be non-zero and rejects a zero `onBehalf`; separate `*InputValidation` rules cover the other modeled entry points. `settleInputValidation` checks market creation, settlement enablement, a non-zero borrow-share input, a non-zero receiver, and authorization from `onBehalf`. These implications assert that invalid inputs revert; they do not claim that every other input succeeds.
+
+### Controller calls
+
+General accounting specifications replace `controller.on(...)` with a summary that does not write LidoLend storage. This is a modeling restriction, not a runtime guarantee. A controller can call unhooked entry points or exercise permissions granted to its address.
+
+[`Settlement.spec`](specs/Settlement.spec) models controller acceptance and rejection for settlement. [`Reentrancy.spec`](specs/Reentrancy.spec) checks the hook lock and call ordering. The [Foundry controller-hook tests](../TEST_PLAN.md#1-controller-hooks) cover nested behavior that is not expanded in the generic CVL summaries, including a controller calling `flashLoan` during a hook.
+
+### Authorization
+
+Authorization rules distinguish adverse changes from permissionless beneficial actions. They check that an unauthorized caller cannot reduce another user's supply shares, increase its debt, or withdraw its collateral, while supply, repay, and collateral addition may act for another account. Settlement authorization is taken from the supply owner, not the borrower.
+
+### Health
+
+The health rules use upward-rounded debt and LLTV-adjusted collateral value; equality is healthy. [`StayHealthy.spec`](specs/StayHealthy.spec) checks that ordinary actions preserve a previously healthy position when no interest elapses during the checked call. When liquidation reduces collateral to zero, the core writes off any remaining debt; settlement is modeled separately because it has no liquidation incentive or core health check.
+
+### Settlement roles and rounding
+
+Settlement uses four roles whose addresses may alias unless a rule constrains them:
+
+| Actor | Role |
+| --- | --- |
+| `msg.sender` | Authorized initiator for `onBehalf`. |
+| `onBehalf` | Supply owner whose shares are burned. |
+| `borrower` | Debt and collateral owner. |
+| `receiver` | Collateral recipient. |
+
+[`Settlement.spec`](specs/Settlement.spec) tracks the upward-rounded supply burn against `onBehalf`, the exact debt-share cut and collateral debit against `borrower`, and the returned downward-rounded collateral amount. Token delivery to `receiver` is covered by the Foundry settlement tests; the CVL transfer is summarized.
+
+### Liveness
+
+Transition rules specify the post-state of successful calls. Separate `canRepayAll`, `canWithdrawAll`, and `canWithdrawCollateralAll` rules check non-reversion only under their explicit controller, transfer, arithmetic, and health assumptions. They do not prove controller-independent exit availability.
+
+## Specification map
+
+| File | Main properties |
+| --- | --- |
+| [`AccrueInterest.spec`](specs/AccrueInterest.spec) | Interest-accrual equivalence for actions that accrue first. |
+| [`AssetsAccounting.spec`](specs/AssetsAccounting.spec) | Entry and exit asset bounds. |
+| [`ConsistentState.spec`](specs/ConsistentState.spec) | Market totals, market independence, immutable configuration, and adverse unauthorized changes. |
+| [`ExactMath.spec`](specs/ExactMath.spec) | Full-repay exchange-rate reset and no-profit same-block supply/withdraw and borrow/repay round trips. |
+| [`ExchangeRate.spec`](specs/ExchangeRate.spec) | Supply and borrow exchange-rate behavior. |
+| [`Health.spec`](specs/Health.spec) | Health and the boundary between liquidation and settlement. |
+| [`LibSummary.spec`](specs/LibSummary.spec) | Correctness assumptions for library summaries used by other rules. |
+| [`LiquidateBuffer.spec`](specs/LiquidateBuffer.spec) | Liquidation buffer properties under the stated price and interest assumptions. |
+| [`Liveness.spec`](specs/Liveness.spec) | Expected deltas of successful actions, subject to controller and dependency assumptions. |
+| [`Reentrancy.spec`](specs/Reentrancy.spec) | External-call ordering and transient hook-lock lifecycle. |
+| [`Reverts.spec`](specs/Reverts.spec) | Input validation and revert conditions. |
+| [`Settlement.spec`](specs/Settlement.spec) | Borrow-share-anchored settlement, supply ownership, exact deltas, controller veto, and rollback. |
+| [`StayHealthy.spec`](specs/StayHealthy.spec) | With no interest elapsed during the checked call, ordinary actions preserve a previously healthy position; separate rules cover liquidation cases. |
+| [`Transfer.spec`](specs/Transfer.spec) | Safe-transfer summaries and supported ERC-20 return patterns. |
+
+Each [`certora/confs`](confs) file selects a harness, one or more CVL specifications, and compiler settings. `Transfer.conf` also links the modeled contracts in [`certora/dispatch`](dispatch). [`certora/helpers`](helpers) exposes internal state needed by the rules.
+
+## Important limitations
+
+- A successful Certora run is evidence for one source commit, configuration, and rule set. Keep the report URL or CI run with the reviewed commit.
+- Summaries replace some external calls. A result does not cover behavior excluded by those summaries.
+- Token assumptions exclude transfer fees, burns, and rebasing.
+- Generic controller summaries do not explore calls from the controller into unhooked core functions, including `flashLoan` and authorization functions.
+- `Reentrancy.spec` treats selected-IRM `borrowRate` calls as trusted and does not prove safety against a reentrant or malicious IRM. The Foundry reentrancy suite covers controller hooks, not IRM callbacks.
+- The harness verifies the implementation directly and initializes its owner in the harness constructor. Proxy delegatecall storage, `initialize`, the EIP-712 domain behavior, and the upgrade lifecycle are outside the Certora model.
+- Liveness is conditional on controller acceptance and the modeled dependencies.
+- Settlement actor addresses are unconstrained unless a rule adds equality or inequality assumptions. Several rules require `msg.sender == onBehalf`; `onBehalf`, `borrower`, and `receiver` may otherwise alias.
+- `Settlement.spec` does not prove a one-unit bound on the total settlement gap. In the core math, only the up-versus-down borrow-share valuation has that bound; oracle conversion adds a separate remainder of less than one raw collateral-token unit.
+
+## Running the rules
+
+The repository does not pin `certora-cli`. To reproduce a reviewed result, use the CLI version recorded with that result. Set `CERTORAKEY` and ensure that `solc-0.8.36` is available on `PATH`.
+
+Run a configuration from the repository root:
+
+```sh
+certoraRun certora/confs/ConsistentState.conf
 ```
 
-where `balance` is the ERC20 balance of the LidoLend contract.
+Run one rule with `--rule`:
 
-The verification is done for the most common implementations of the ERC20 standard, for which we distinguish three different implementations:
-
-- [ERC20Standard](dispatch/ERC20Standard.sol) which respects the standard and reverts in case of insufficient funds or in case of insufficient allowance.
-- [ERC20NoRevert](dispatch/ERC20NoRevert.sol) which respects the standard but does not revert (and returns false instead).
-- [ERC20USDT](dispatch/ERC20USDT.sol) which does not strictly respect the standard because it omits the return value of the `transfer` and `transferFrom` functions.
-
-Additionally, LidoLend always goes through a custom transfer library to handle ERC20 tokens, notably in all the above cases.
-This library reverts when the transfer is not successful, and this is checked for the case of insufficient funds or insufficient allowance.
-The use of the library can make it difficult for the provers, so the summary is sometimes used in other specification files to ease the verification of rules that rely on the transfer of tokens.
-
-## Markets
-
-The LidoLend contract is a singleton contract that defines different markets.
-Markets depend on a pair of assets: the loan token that is supplied and borrowed, and the collateral token.
-Only the owner can create a market. Creation enables its IRM and LLTV and may bind a controller. A controller binding and the settlement setting are immutable for the lifetime of the market, and settlement can only be enabled when a non-zero controller is bound.
-For controlled markets, every state-changing market action calls the controller before its accounting mutations. A controller may reject the action by reverting. The specifications model successful and reverting hooks separately from the core accounting transitions.
-
-### Controller-call model
-
-The inherited accounting specifications summarize `on(...)` as side-effect-free with respect to LidoLend storage. This isolates each core state transition and is sound for the market-accounting slots protected from hooked reentry. The dedicated settlement specification additionally models both controller acceptance and rejection, observes that the transient lock is held during the call, and checks rollback after a veto. `Reentrancy.spec` checks the protected-call ordering and lock lifecycle.
-
-Controller-initiated calls to the deliberately unhooked `flashLoan` and authorization entrypoints are not expanded inside the accounting specifications. Their reachable behavior is covered by the Foundry reentrancy suite; Certora results for generic authorization rules therefore carry this explicit non-reentry modeling assumption.
-Taking out a loan requires to deposit some collateral, which stays idle in the contract.
-Additionally, every loan token that is not borrowed also stays idle in the contract.
-This is verified by the following property:
-
-```solidity
-invariant idleAmountLessThanBalance(address token)
-    idleAmount[token] <= balance[token]
-```
-
-where `idleAmount` is the sum over all markets of collateral plus supplied assets minus borrowed assets.
-This ensures that the contract's token balances cover the assets accounted as idle across its markets.
-
-Additionally, it is checked that on a given market the borrowed amounts cannot exceed the supplied amounts.
-
-```solidity
-invariant borrowLessThanSupply(MorphoHarness.Id id)
-    totalBorrowAssets(id) <= totalSupplyAssets(id);
-```
-
-This property, along with the previous one ensures that other markets can only impact the balance positively.
-Said otherwise, markets are independent: tokens from a given market cannot be impacted by operations done in another market.
-
-## Shares
-
-When supplying on LidoLend, interest is earned over time, and the distribution is implemented through a shares mechanism.
-Shares increase in value as interest is accrued.
-The share mechanism is implemented symmetrically for the borrow side: a share of borrow increasing in value over time represents additional owed interest.
-The rule `accrueInterestIncreasesSupplyExchangeRate` checks this property for the supply side with the following statement.
-
-```solidity
-    // Check that the exchange rate increases: assetsBefore/sharesBefore <= assetsAfter/sharesAfter
-    assert assetsBefore * sharesAfter <= assetsAfter * sharesBefore;
-```
-
-where `assetsBefore` and `sharesBefore` represents respectively the supplied assets and the supplied shares before accruing the interest. Similarly, `assetsAfter` and `sharesAfter` represent the supplied assets and shares after an interest accrual.
-
-The accounting of the shares mechanism relies on another variable to store the total number of shares, in order to compute what is the relative part of each user.
-This variable needs to be kept up to date at each corresponding interaction, and it is checked that this accounting is done properly.
-For example, for the supply side, this is done by the following invariant.
-
-```solidity
-invariant sumSupplySharesCorrect(MorphoHarness.Id id)
-    to_mathint(totalSupplyShares(id)) == sumSupplyShares[id];
-```
-
-where `sumSupplyShares` only exists in the specification, and is defined to be automatically updated whenever any of the shares of the users are modified.
-
-## Positions health and liquidations
-
-To ensure proper collateralization, a liquidation system is put in place, where unhealthy positions can be liquidated.
-A position is said to be healthy if the ratio of the borrowed value over collateral value is smaller than the liquidation loan-to-value (LLTV) of that market.
-This leaves a safety buffer before the position can be insolvent, where the aforementioned ratio is above 1.
-To ensure that liquidators have the time to interact with unhealthy positions, it is formally verified that this buffer is respected and that it leaves room for healthy liquidations to happen.
-Notably, it is verified that in the absence of accrued interest, which is the case when creating a new position or when interacting multiple times in the same block, a position cannot be made unhealthy.
-
-Let's define bad debt of a position as the amount borrowed when it is backed by no collateral.
-Liquidation realizes bad debt when a position runs out of collateral. Settlement is a separate path, available on controlled markets, that cancels debt against a lender's supply shares and transfers collateral at par. It may leave a borrower with debt and no collateral only on a settlement-enabled market.
-The health specification captures that boundary with the following invariant.
-
-```solidity
-invariant debtWithoutCollateralRequiresSettlementMarket(MorphoHarness.Id id, address borrower)
-    borrowShares(id, borrower) != 0 && collateral(id, borrower) == 0
-        => isSettlementEnabled(id);
-```
-
-The specifications also check that ordinary actions cannot reduce a healthy user's collateral into an unhealthy state; liquidation and settlement have dedicated properties.
-
-## Authorization
-
-LidoLend also defines a primitive authorization system, where users can authorize an account to fully manage their position.
-This allows to rebuild more granular control of the position on top by authorizing an immutable contract with limited capabilities.
-The authorization is verified to be sound in the sense that no user can modify the position of another user without proper authorization (except when liquidating).
-
-Let's detail the rule that makes sure that the supply side stays consistent.
-
-```solidity
-rule userCannotLoseSupplyShares(env e, method f, calldataarg data)
-filtered { f -> !f.isView }
-{
-    MorphoHarness.Id id;
-    address user;
-
-    // Assume that the e.msg.sender is not authorized.
-    require !isAuthorized(user, e.msg.sender);
-    require user != e.msg.sender;
-
-    mathint sharesBefore = supplyShares(id, user);
-
-    f(e, data);
-
-    mathint sharesAfter = supplyShares(id, user);
-
-    assert sharesAfter >= sharesBefore;
-}
-```
-
-In the previous rule, an arbitrary function of LidoLend `f` is called with arbitrary `data`.
-Shares of `user` on the market identified by `id` are recorded before and after this call.
-In this way, it is checked that the supply shares are increasing when the caller of the function is neither the owner of those shares (`user != e.msg.sender`) nor authorized (`!isAuthorized(user, e.msg.sender)`).
-
-## Other safety properties
-
-### Market configuration
-
-Only the owner can create a market, the LLTV must be below 100%, and a market id can only be created once. The IRM and LLTV become enabled atomically with the first market that uses them.
-The following invariant checks the resulting LLTV configuration.
-
-```solidity
-invariant onlyEnabledLltv(MorphoHarness.MarketParams marketParams)
-    isCreated(libId(marketParams)) => isLltvEnabled(marketParams.lltv);
-```
-
-The corresponding IRM invariant checks that every created market uses an enabled IRM. Controller invariants check that settlement requires a non-zero controller and that controller and settlement settings cannot change after creation.
-
-### Range of the fee
-
-The governance can choose to set a fee to a given market.
-Fees are guaranteed to never exceed 25% of the interest accrued, and this is verified by the following rule.
-
-```solidity
-invariant feeInRange(MorphoHarness.Id id)
-    fee(id) <= maxFee();
-```
-
-### Sanity checks and input validation
-
-The formal verification is also taking care of other sanity checks, some of which are needed properties to verify other rules.
-For example, the following rule checks that the variable storing the last update time is no more than the current time.
-This is a sanity check, but it is also useful to ensure that there will be no underflow when computing the time elapsed since the last update.
-
-```solidity
-rule noTimeTravel(method f, env e, calldataarg args)
-filtered { f -> !f.isView }
-{
-    MorphoHarness.Id id;
-    // Assume the property before the interaction.
-    require lastUpdate(id) <= e.block.timestamp;
-    f(e, args);
-    assert lastUpdate(id) <= e.block.timestamp;
-}
-```
-
-Additional rules are verified to ensure that the sanitization of inputs is done correctly.
-
-```solidity
-rule supplyInputValidation(env e, MorphoHarness.MarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, bytes data) {
-    supply@withrevert(e, marketParams, assets, shares, onBehalf, data);
-    assert !exactlyOneZero(assets, shares) || onBehalf == 0 => lastReverted;
-}
-```
-
-The previous rule checks that the `supply` function reverts whenever the `onBehalf` parameter is the address zero, or when either both `assets` and `shares` are zero or both are non-zero.
-
-## Liveness properties
-
-On top of verifying that the protocol is secured, the verification also proves that it is usable.
-Such properties are called liveness properties, and it is notably checked that the accounting is done when an interaction goes through.
-As an example, the `withdrawChangesTokensAndShares` rule checks that calling the `withdraw` function successfully will decrease the shares of the concerned account and increase the balance of the receiver.
-
-Other liveness properties are verified as well.
-Notably, it's also verified that it is always possible to exit a position without concern for the oracle.
-This is done through the verification of two rules: the `canRepayAll` rule and the `canWithdrawCollateralAll` rule.
-The `canRepayAll` rule ensures that it is always possible to repay the full debt of a position, leaving the account without any outstanding debt.
-The `canWithdrawCollateralAll` rule ensures that in the case where the account has no outstanding debt, then it is possible to withdraw the full collateral.
-
-## Protection against common attack vectors
-
-Other common and known attack vectors are covered by the LidoLend specifications.
-
-### Reentrancy
-
-Reentrancy is a common attack vector that happens when a call to a contract allows, when in a temporary state, to call the same contract again.
-The state of the contract usually refers to the storage variables, which can typically hold values that are meant to be used only after the full execution of the current function.
-The rule `noUnprotectedExternalCall` checks the inherited external-call ordering property. Controller hooks are allowed at their designated call sites because `_hook` holds a transient lock; `hookedActionReleasesLock` checks that every successfully completed hooked action releases it.
-
-### Extraction of value
-
-LidoLend uses a conservative approach to handle arithmetic operations.
-Rounding is done such that potential (small) errors are in favor of the protocol, which ensures that it is not possible to extract value from other users.
-
-The rule `supplyWithdraw` handles the simple scenario of a supply followed by a withdraw, and has the following check.
-
-```solidity
-assert withdrawnAssets <= suppliedAssets;
-```
-
-The rule `withdrawAssetsAccounting` is more general and defines `ownedAssets` as the assets that the user owns, rounding in favor of the protocol.
-This rule has the following check to ensure that no more than the owned assets can be withdrawn.
-
-```solidity
-assert withdrawnAssets <= ownedAssets;
-```
-
-# Folder and file structure
-
-The [`certora/specs`](specs) folder contains the following files:
-
-- [`AccrueInterest.spec`](specs/AccrueInterest.spec) checks that the main functions accrue interest at the start of the interaction.
-  This is done by ensuring that accruing interest before calling the function does not change the outcome compared to just calling the function.
-  View functions do not necessarily respect this property (for example, `totalSupplyShares`), and are filtered out.
-- [`AssetsAccounting.spec`](specs/AssetsAccounting.spec) checks that when exiting a position the user cannot get more than what was owed.
-  Similarly, when entering a position, the assets owned as a result are no greater than what was given.
-- [`ConsistentState.spec`](specs/ConsistentState.spec) checks that the state (storage) of the LidoLend contract is consistent.
-  This includes checking that the accounting of the total amount and shares is correct, that markets are independent from each other, that market configuration is consistent and immutable, and that users cannot have their position made worse by an unauthorized account.
-- [`ExactMath.spec`](specs/ExactMath.spec) checks precise properties when taking into account exact multiplication and division.
-  Notably, this file specifies that using supply and withdraw in the same block cannot yield more funds than at the start.
-- [`ExchangeRate.spec`](specs/ExchangeRate.spec) checks that the exchange rate between shares and assets evolves predictably over time.
-- [`Health.spec`](specs/Health.spec) checks properties about the health of the positions.
-  It distinguishes ordinary collateralized flows from settlement on settlement-enabled markets.
-- [`LibSummary.spec`](specs/LibSummary.spec) checks the summarization of the library functions that are used in other specification files.
-- [`LiquidateBuffer.spec`](specs/LiquidateBuffer.spec) checks that there is a buffer for liquidatable positions, before they are insolvent, such that liquidation leads to healthier position and cannot lead to bad debt.
-- [`Liveness.spec`](specs/Liveness.spec) checks that main functions change the owner of funds and the amount of shares as expected, and that it's always possible to exit a position.
-- [`Reentrancy.spec`](specs/Reentrancy.spec) checks the ordering of unprotected external calls and that every successful controller-hooked action releases the transient hook lock.
-- [`Reverts.spec`](specs/Reverts.spec) checks the condition for reverts and that inputs are correctly validated.
-- [`Settlement.spec`](specs/Settlement.spec) checks exact borrow-share settlement, the derived supply-share ownership boundary, accounting deltas, hook execution, and controller-revert atomicity.
-- [`StayHealthy.spec`](specs/StayHealthy.spec) checks that functions cannot render an account unhealthy.
-- [`Transfer.spec`](specs/Transfer.spec) checks the summarization of the safe transfer library functions that are used in other specification files.
-
-The [`certora/confs`](confs) folder contains a configuration file for each corresponding specification file.
-
-The [`certora/helpers`](helpers) folder contains contracts that enable the verification of LidoLend.
-Notably, this allows handling the fact that library functions should be called from a contract to be verified independently, and it allows defining needed getters.
-
-The [`certora/dispatch`](dispatch) folder contains different contracts similar to the ones that are expected to be called from LidoLend.
-
-# Getting started
-
-Install a current `certora-cli` package with `python3 -m pip install --upgrade certora-cli` and ensure that a `solc-0.8.35` executable is available on `PATH`.
-To verify specification files, pass to `certoraRun` the corresponding configuration file in the [`certora/confs`](confs) folder.
-It requires having set the `CERTORAKEY` environment variable to a valid Certora key.
-You can also pass additional arguments, notably to verify a specific rule.
-For example, at the root of the repository:
-
-```
+```sh
 certoraRun certora/confs/ConsistentState.conf --rule borrowLessThanSupply
 ```
+
+Record the source commit, CLI version, compiler version, configuration, and report URL for every result used as evidence.
