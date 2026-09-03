@@ -6,7 +6,7 @@ This document maps fork requirements to the Foundry tests that exercise them; it
 |---|---|
 | Owner-gated creation and controller binding | `OnlyOwnerIntegrationTest`, `CreateMarketIntegrationTest`, `ControllerIntegrationTest` |
 | Controller hooks | `HooksIntegrationTest`, `ReentrancyIntegrationTest`, `SettleIntegrationTest` |
-| `settle` | `SettleMathTest`, `SettleMathCrowdedTest`, the four suites in `test/integration/SettleIncidenceTest.sol`, `SettleIntegrationTest`, `SettleInvariantTest` |
+| `settle` | `SettleMathTest`, `SettleMathCrowdedTest`, the four suites in `test/integration/SettleIncidenceTest.sol`, `SettleIntegrationTest`, `SettleRoundingAccumulationTest`, `SettleInvariantTest` |
 | Upgradeable initializer and storage | `InitializeIntegrationTest`, `MorphoStorageLibTest` |
 
 Run `forge test` for the complete Foundry suite. Run `forge coverage --report summary --no-match-coverage "test|mocks"` to produce coverage for the exact commit being reviewed. Do not copy percentages from an earlier commit: coverage can change without changing the test inventory.
@@ -74,7 +74,7 @@ These tests cover controller-hook reentrancy. No Foundry regression exercises re
 
 ## 2. `settle`
 
-[Settlement](SPECIFICATION.md#settlement) defines the mechanism and formulas. `SettleMathTest` covers arithmetic and boundaries, `SettleIntegrationTest` covers authorization, hooks, events, and lifecycle behavior, and `SettleInvariantTest` supplies stateful fuzz coverage.
+[Settlement](SPECIFICATION.md#settlement) defines the mechanism and formulas. `SettleMathTest` covers arithmetic and boundaries, `SettleIntegrationTest` covers authorization, hooks, events, and lifecycle behavior, `SettleRoundingAccumulationTest` bounds how much a settling lender can lose to rounding, and `SettleInvariantTest` supplies stateful fuzz coverage.
 
 ### Guards and authorization (`SettleIntegrationTest`)
 
@@ -121,6 +121,15 @@ The fuzz cases recompute settlement amounts and check exact deltas for the posit
 | A zero borrow-share input is rejected before any amount is calculated | `testZeroCutRejected` |
 | When upward valuation exceeds total borrow assets by one raw unit, the new total is floored at zero instead of underflowing and the supply total decreases by the full canceled amount | `testZeroFloorSubIsExercised` |
 | A full settlement of a sub-unit debt holding whose calculated collateral output is zero reverts with `SETTLEMENT_SLICE_TOO_SMALL` | `testDustPositionCannotBeClosed` |
+
+### Rounding magnitude (`SettleRoundingAccumulationTest`)
+
+The incidence cases establish who pays each rounding. These bound how much it can be and show that it does not compound. `settle` rounds against the settling side twice: the borrow-share input is valued up into `borrowAssetsCanceled` but down as the seizure basis, under one raw loan unit, and that basis converts to collateral with `mulDivDown`, under one raw collateral unit. One settlement therefore costs its caller less than one unit of each side, stated in integers as `canceled * SCALE - seized * price < SCALE + price`. The bound carries no constant and no price dependence, but expressed in collateral units it reads `SCALE / price + 1`, so one loan unit can be a large number of collateral units when collateral is cheap per unit.
+
+| Verifies | Test |
+|---|---|
+| Across the full oracle price range, a fuzzed fee, fuzzed accrual leaving both the supply and the borrow share price at non-round values, fuzzed debt, and fuzzed input sizes: no single settlement costs its caller more than one raw loan unit plus one raw collateral unit, and N settlements cost at most N of those | `testLenderLossPerCallBoundedFuzz` |
+| A worked instance on a concrete pair, 18-decimal collateral at $2500 against a 2-decimal loan at $1, where `SCALE / price` is the exact integer 4e12: 50 misaligned settlements each pay one loan unit of basis, 2e14 collateral units in total, while one aligned settlement of the same total size pays none. This also keeps the fuzz bound from passing vacuously by pinning a non-zero loss | `testWorkedCaseOneLoanWeiIsFourTrillionCollateralWei` |
 
 ### Position closure (`SettleMathTest`, `SettleIntegrationTest`)
 
