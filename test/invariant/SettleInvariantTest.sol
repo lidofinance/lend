@@ -40,6 +40,12 @@ contract SettleInvariantTest is InvariantTest {
     EnforcingControllerMock internal cController;
     OracleMock internal cOracle; // dedicated oracle: a distinct market id, and price swings stay isolated
 
+    // Audit FZ-02: loan tokens the core keeps above the accounting idle because a settle's `debtCanceled`
+    // exceeded the pre-cut borrow total and the core floored that total at zero. Computed from the
+    // pre-state and the returned value, never from the measured balance.
+    uint256 internal settleZeroFloorExcess;
+    uint256 internal auditSettleCuts;
+
     struct Cut {
         bool ok;
         uint256 sliceShares;
@@ -157,6 +163,10 @@ contract SettleInvariantTest is InvariantTest {
         assertEq(sharesBurned, c.sliceShares, "dlv: return supplySharesBurned");
         assertLe(sharesBurned, b.lenderSupplyShares, "dlv: burn within lender ownership");
 
+        // Audit FZ-02 ghost: the part of `debtCanceled` above the pre-cut borrow total leaves supply only.
+        settleZeroFloorExcess += UtilsLib.zeroFloorSub(debtCanceled, b.totalBorrowAssets);
+        ++auditSettleCuts;
+
         // Exact deltas, measured against the contract's own returned values.
         assertEq(morpho.supplyShares(cId, LENDER), b.lenderSupplyShares - sharesBurned, "dlv: lender supplyShares");
         assertEq(morpho.totalSupplyShares(cId), b.totalSupplyShares - sharesBurned, "dlv: totalSupplyShares");
@@ -205,6 +215,35 @@ contract SettleInvariantTest is InvariantTest {
             "dlv: burned supply is worth at least the canceled debt"
         );
         _assertBorrowerValueExchange(borrower, bystander, b, collateralSeized, price);
+        _assertBurnAndBystanderLender(b, sharesBurned, debtCanceled);
+    }
+
+    // Audit FZ-22. Upper bound on the burn: `sliceShares = toSharesUp(debtCanceled)`, so the burned shares are
+    // worth at most the canceled debt plus one pre-cut share's value, rounded up. Bystander lender: LENDER2's
+    // shares are untouched, so its value tracks the supply rate, which a cut must not lower (cross-multiplied
+    // with the virtual offsets, no tolerance).
+    function _assertBurnAndBystanderLender(Bal memory b, uint256 sharesBurned, uint256 debtCanceled) internal {
+        uint256 preShareValueUp = uint256(1).mulDivUp(
+            b.totalSupplyAssets + SharesMathLib.VIRTUAL_ASSETS, b.totalSupplyShares + SharesMathLib.VIRTUAL_SHARES
+        );
+        assertLe(
+            sharesBurned.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares),
+            debtCanceled + preShareValueUp,
+            "FZ-22: burned supply value <= debtCanceled + ceil(pre share price)"
+        );
+
+        uint256 tSA = morpho.totalSupplyAssets(cId);
+        uint256 tSS = morpho.totalSupplyShares(cId);
+        assertGe(
+            (tSA + SharesMathLib.VIRTUAL_ASSETS) * (b.totalSupplyShares + SharesMathLib.VIRTUAL_SHARES),
+            (b.totalSupplyAssets + SharesMathLib.VIRTUAL_ASSETS) * (tSS + SharesMathLib.VIRTUAL_SHARES),
+            "FZ-22: supply share rate never falls across a cut"
+        );
+        assertGe(
+            b.lender2Shares.toAssetsDown(tSA, tSS),
+            b.lender2Shares.toAssetsDown(b.totalSupplyAssets, b.totalSupplyShares),
+            "FZ-22: bystander lender value never falls across a cut"
+        );
     }
 
     // `debtCanceled` leaves the market as a whole, so only part of it lands on the target's own position and
@@ -377,7 +416,82 @@ contract SettleInvariantTest is InvariantTest {
         _executeAndAssertCut(CB, c);
     }
 
+    // Audit reach test (FZ-02, FZ-22): a successful cut runs the FZ-22 asserts inside `_executeAndAssertCut`,
+    // then both aggregate custody invariants are checked on the post-cut state.
+    function test_auditReach_settleCustodyAndBystander() public {
+        uint256 amount = MAX_TEST_AMOUNT / 4;
+        loanToken.setBalance(LENDER, amount);
+        vm.prank(LENDER);
+        morpho.supply(cParams, amount, 0, LENDER, hex"");
+        vm.prank(CB);
+        morpho.borrow(cParams, amount, 0, CB, CB);
+        _forward(30 days / BLOCK_TIME); // interest and the 10% fee move both share rates off 1:1
+
+        this.settleNoRevert(0, morpho.borrowShares(cId, CB) / 3);
+
+        assertGt(auditSettleCuts, 0, "reach: a cut was executed");
+        assertGt(morpho.supplyShares(cId, FEE_RECIPIENT), 0, "reach: fee shares were minted");
+        assertGt(morpho.supplyShares(cId, LENDER2), 0, "reach: bystander lender holds shares");
+        invariantAggregateLoanCustody();
+        invariantAggregateCollateralCustody();
+        invariantSupplyShares();
+        invariantBorrowShares();
+    }
+
+    // Audit reach test (FZ-02 zero floor, F11). CB is the only controller-market borrower (setUp). A one-share
+    // repay pulls `toAssetsUp(1) == 1` and moves the borrow total to 1 asset per 1e6 shares minus one share, so a
+    // full-debt cut then cancels `toAssetsUp(all shares)` = the pre-repay total, one unit above the stored total.
+    // The core floors the total at zero (`LidoLend.sol` settle `zeroFloorSub`) and keeps that unit as loan tokens,
+    // which only the `settleZeroFloorExcess` ghost accounts for.
+    function test_auditReach_settleZeroFloor() public {
+        uint256 amount = MAX_TEST_AMOUNT / 4;
+        loanToken.setBalance(LENDER, amount);
+        vm.prank(LENDER);
+        morpho.supply(cParams, amount, 0, LENDER, hex"");
+
+        assertEq(morpho.borrowShares(cId, CB2), 0, "setup: CB is the only controller-market borrower");
+        loanToken.setBalance(CB, 1);
+        vm.prank(CB);
+        morpho.repay(cParams, 0, 1, CB, hex"");
+
+        uint256 shares = morpho.borrowShares(cId, CB);
+        assertEq(shares, morpho.totalBorrowShares(cId), "setup: CB holds every borrow share");
+        this.settleNoRevert(0, shares);
+
+        assertGt(auditSettleCuts, 0, "reach: a full-debt cut was executed");
+        assertEq(morpho.borrowShares(cId, CB), 0, "reach: CB fully settled");
+        assertEq(morpho.totalBorrowAssets(cId), 0, "reach: borrow total floored at zero");
+        assertGt(settleZeroFloorExcess, 0, "reach FZ-02: settle zero-floor excess");
+        invariantAggregateLoanCustody();
+        invariantAggregateCollateralCustody();
+        invariantSupplyShares();
+        invariantBorrowShares();
+    }
+
     /* INVARIANTS */
+
+    // Audit FZ-02 (loan side). The core holds exactly the accounting idle of both markets on these shared
+    // tokens, plus what settle zero floors left behind. `topUpControllerMarket` supplies and borrows the same
+    // amount, accrual moves both totals equally, and settle moves no loan token.
+    function invariantAggregateLoanCustody() public {
+        uint256 idle = morpho.totalSupplyAssets(cId) - morpho.totalBorrowAssets(cId) + morpho.totalSupplyAssets(id)
+            - morpho.totalBorrowAssets(id);
+        assertEq(loanToken.balanceOf(address(morpho)), idle + settleZeroFloorExcess, "FZ-02: loan custody");
+    }
+
+    // Audit FZ-02 (collateral side). Every collateral token the core holds is recorded on a position in one of
+    // the two markets; settle sends the seized part to the receiver.
+    function invariantAggregateCollateralCustody() public {
+        uint256 sum = morpho.collateral(cId, CB) + morpho.collateral(cId, CB2) + morpho.collateral(cId, LENDER)
+            + morpho.collateral(cId, LENDER2) + morpho.collateral(id, CB) + morpho.collateral(id, CB2)
+            + morpho.collateral(id, LENDER) + morpho.collateral(id, LENDER2);
+        assertEq(collateralToken.balanceOf(address(morpho)), sum, "FZ-02: collateral custody");
+    }
+
+    function afterInvariant() public {
+        emit log_named_uint("auditSettleCuts", auditSettleCuts);
+        emit log_named_uint("settleZeroFloorExcess", settleZeroFloorExcess);
+    }
 
     function invariantSupplyShares() public {
         uint256 sum = morpho.supplyShares(cId, LENDER) + morpho.supplyShares(cId, LENDER2)
