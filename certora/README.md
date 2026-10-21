@@ -100,7 +100,7 @@ Each [`certora/confs`](confs) file selects a harness, one or more CVL specificat
 
 ## Running the rules
 
-The repository does not pin `certora-cli`. To reproduce a reviewed result, use the CLI version recorded with that result. Set `CERTORAKEY` and ensure that `solc-0.8.36` is available on `PATH`.
+Install `certora-cli` with pip. CI uses the version pinned in [`certora.yml`](../.github/workflows/certora.yml). Put your Certora key in `CERTORAKEY`. The configurations call the compiler as `solc-0.8.36`, so a binary with that name must be on `PATH`.
 
 Run a configuration from the repository root:
 

@@ -1,8 +1,8 @@
 # LidoLend
 
-`LidoLend` is the shared lending core used by the Lido Lend product. It is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue). One contract stores many isolated markets. Each market has its own assets, positions, oracle, interest-rate model (IRM), and liquidation loan-to-value (LLTV), while all markets use the same accounting logic.
+`LidoLend` is the shared lending core used by the Lido Lend product. It is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue). One contract stores many isolated markets. Each market has its own loan and collateral tokens, positions, oracle, interest-rate model (IRM), and liquidation loan-to-value (LLTV), while all markets use the same accounting logic.
 
-Lenders supply a market's loan asset. Borrowers provide collateral and borrow that loan asset. Liquidators reduce unhealthy debt. The inherited Morpho rules define this accounting.
+Lenders supply a market's loan token. Borrowers provide collateral and borrow that loan token. Liquidators reduce unhealthy debt. The inherited Morpho rules define this accounting.
 
 This fork adds four protocol boundaries:
 

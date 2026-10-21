@@ -3,11 +3,15 @@ name: Certora
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         conf:
           - AccrueInterest
@@ -27,16 +31,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: ">=3.9"
 
-      - run: pip install certora-cli
+      - run: pip install certora-cli==8.20.2
 
+      # sha256 from https://binaries.soliditylang.org/linux-amd64/list.json
       - name: Install solc
         run: |
           wget https://github.com/ethereum/solidity/releases/download/v0.8.36/solc-static-linux
+          echo "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6  solc-static-linux" | sha256sum -c -
           chmod +x solc-static-linux
           sudo mv solc-static-linux /usr/local/bin/solc-0.8.36
 
