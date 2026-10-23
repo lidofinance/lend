@@ -12,3 +12,6 @@ docs/
 emv-*/
 resource_errors.json
 certora_debug_log.txt
+
+# Python
+__pycache__/

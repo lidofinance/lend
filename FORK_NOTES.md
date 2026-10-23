@@ -1,6 +1,6 @@
 # Morpho Blue fork notes
 
-This document records the fork point and the source, ABI, and storage differences from Morpho Blue. Runtime behavior belongs in [SPECIFICATION.md](SPECIFICATION.md); executable coverage belongs in [TEST_PLAN.md](TEST_PLAN.md).
+This document records the fork point and the source, ABI, build, and storage differences from Morpho Blue. Runtime behavior belongs in [SPECIFICATION.md](SPECIFICATION.md); executable coverage belongs in [TEST_PLAN.md](TEST_PLAN.md).
 
 ## Fork point
 
@@ -26,14 +26,16 @@ Inherited files are modified in place. Fork-only files are added only when no up
 
 | Area | Change |
 | --- | --- |
-| Core | `src/Morpho.sol` becomes `src/LidoLend.sol`; controller hooks, settlement, owner-only creation, and initialization are added. |
+| Core | `src/Morpho.sol` becomes `src/LidoLend.sol`; controller hooks, settlement, owner-only creation, and initialization are added. `DOMAIN_SEPARATOR()` is computed on every call instead of being fixed at deployment. |
 | Core interface | [`ILidoLend.sol`](src/interfaces/ILidoLend.sol) adds the fork members while preserving the inherited typed-interface split. |
 | Controller interface | [`ILidoLendMarketController.sol`](src/interfaces/ILidoLendMarketController.sol) defines the hook events and payloads. |
-| Existing interfaces | `IMorpho.sol` removes `enableIrm` and `enableLltv` and documents changed behavior on inherited members. |
+| Existing interfaces | `IMorpho.sol` removes `enableIrm` and `enableLltv` and documents changed behavior on inherited members. `IOracle.sol` adds a note that the price must be non-zero. |
 | Libraries | `ErrorsLib` removes the obsolete IRM/LLTV enablement errors and adds fork errors; fork events are appended to `EventsLib`; `MorphoStorageLib` exposes the appended slots. |
+| Mocks | `src/mocks` adds three test controllers. One records hooks and can block a chosen hook, one allows `settle` only while the borrower stays solvent, and one reenters the core from its hook. |
 | Tests | Applicable upstream tests remain; tests for the removed enable functions and old creation guards are replaced. Fork integration, math, incidence, reentrancy, and invariant coverage is added. |
+| Build | `foundry.toml` turns via-IR off and sets 200 optimizer runs, whereas upstream builds with via-IR and 999999 runs. |
 
-Retained inherited ABI members keep their names, including the `onMorpho*` callbacks and upstream events. The core contract is renamed, `enableIrm` and `enableLltv` are removed, and fork-specific members are added as listed above.
+Retained inherited ABI members keep their names, including the `onMorpho*` callbacks and upstream events. The core contract is renamed, its constructor takes no arguments, `enableIrm` and `enableLltv` are removed, and fork-specific members are added as listed above.
 
 ## Storage layout
 

@@ -1,4 +1,4 @@
-# LidoLend
+# Lido Lend
 
 `LidoLend` is the shared lending core used by the Lido Lend product. It is a fork of [Morpho Blue](https://github.com/morpho-org/morpho-blue). One contract stores many isolated markets. Each market has its own loan and collateral tokens, positions, oracle, interest-rate model (IRM), and liquidation loan-to-value (LLTV), while all markets use the same accounting logic.
 
@@ -34,7 +34,7 @@ Deployment code, production proxy contracts, production controllers, vaults, ora
 
 ## Development
 
-The repository uses [Foundry](https://book.getfoundry.sh/getting-started/installation).
+The repository uses [Foundry](https://www.getfoundry.sh/introduction/installation).
 
 From a checkout with its submodules initialized:
 
@@ -43,12 +43,14 @@ forge build
 forge test
 ```
 
-Run `make doc` after changing NatSpec. It builds the Solidity abstract syntax tree and regenerates [API_REFERENCE.md](API_REFERENCE.md).
+Run `make doc` after changing NatSpec. It builds the Solidity abstract syntax tree and regenerates [API_REFERENCE.md](API_REFERENCE.md) with a Python 3 script.
 
 ## Audits
 
-The [`audits/`](audits/) directory contains reports inherited from upstream. Each report covers only the commit and scope named in that report. Their presence does not imply coverage of later upstream changes or the Lido fork changes.
+Audit reports for Morpho Blue are kept in the [upstream repository at the fork-point commit](https://github.com/morpho-org/morpho-blue/tree/1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a/audits). Each report covers only the commit and scope named in that report. None of them covers later upstream changes or the Lido fork changes.
+
+Lido publishes its own audit reports in the [lidofinance/audits](https://github.com/lidofinance/audits) repository.
 
 ## License
 
-The core contracts use `GPL-2.0-or-later`. Individual SPDX headers govern each file; one retained test helper uses `GPL-3.0-or-later`. See [LICENSE](LICENSE) for the repository license terms and the historical BUSL notice.
+The core contracts use `GPL-2.0-or-later`. Individual SPDX headers govern each file; one retained test helper uses `GPL-3.0-or-later`. See [LICENSE](LICENSE) for the repository license terms.
