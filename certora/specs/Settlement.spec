@@ -19,10 +19,7 @@ methods {
     function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
     function hookInProgress() external returns bool envfree;
 
-    function isHealthy(MorphoHarness.MarketParams, address user) external returns bool envfree;
-
     function Util.libId(MorphoHarness.MarketParams) external returns MorphoHarness.Id envfree;
-    function Util.wad() external returns uint256 envfree;
     function Util.libMulDivDown(uint256, uint256, uint256) external returns uint256 envfree;
     function Util.oraclePriceScale() external returns uint256 envfree;
     function Util.toSharesUp(uint256, uint256, uint256) external returns uint256 envfree;
@@ -35,6 +32,9 @@ methods {
         => controllerOn(id, hookEvent, data) expect void;
 }
 
+// The oracle price is one fixed value for the whole rule. The rules therefore do not cover an oracle whose
+// price a call can move, such as one that reads LidoLend state or a token balance, or one that a controller
+// updates in its hook.
 persistent ghost uint256 oraclePrice;
 persistent ghost bool controllerShouldRevert;
 persistent ghost bool controllerWasCalled;
@@ -311,40 +311,11 @@ rule settleFullCloseZeroesPosition(
     assert borrowShares(id, borrower) == 0;
 }
 
-// `settle` never turns a bystander unhealthy. Its collateral is untouched and the borrow index only falls,
-// so its debt can only shrink.
-rule settleKeepsBystanderHealthy(
-    env e,
-    MorphoHarness.MarketParams marketParams,
-    uint256 borrowSharesInput,
-    address onBehalf,
-    address borrower,
-    address receiver
-) {
-    MorphoHarness.Id id = Util.libId(marketParams);
-    address user;
-    require user != borrower;
-
-    // Assume the invariant initially.
-    require isHealthy(marketParams, user);
-
-    // Safe require because of the invariants onlyEnabledLltv and lltvSmallerThanWad in ConsistentState.spec.
-    require marketParams.lltv < Util.wad();
-    // Assumption to ensure that no interest is accumulated.
-    require lastUpdate(id) == e.block.timestamp;
-    require !controllerShouldRevert;
-
-    settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
-
-    // Safe require because of the invariant sumBorrowSharesCorrect.
-    require borrowShares(id, user) <= totalBorrowShares(id);
-
-    assert isHealthy(marketParams, user);
-}
-
-// A settle never worsens the settled borrower's debt-to-collateral ratio. Stated by cross-multiplication so
-// no division reaches the solver, which is what puts the `isHealthy` formulation out of reach. Modelled on
-// liquidateImprovePosition in LiquidateBuffer.spec.
+// A settle does not raise the settled borrower's ratio of debt shares to collateral. This holds for a
+// position whose collateral is worth more than its debt, in a call that accrues no interest. The rule does
+// not prove that a healthy borrower stays healthy. Stated by cross-multiplication so no division reaches the
+// solver, which is what puts the `isHealthy` formulation out of reach. Modelled on liquidateImprovePosition
+// in LiquidateBuffer.spec.
 rule settleImprovePosition(
     env e,
     MorphoHarness.MarketParams marketParams,

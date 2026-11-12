@@ -29,6 +29,9 @@ methods {
     function UtilsLib.min(uint256 a, uint256 b) internal returns uint256 => summaryMin(a, b);
 }
 
+// The oracle price is one fixed value for the whole rule. The rules therefore do not cover an oracle whose
+// price a call can move, such as one that reads LidoLend state or a token balance, or one that a controller
+// updates in its hook.
 persistent ghost uint256 oraclePrice;
 
 function acceptControllerHook() {}
@@ -40,7 +43,7 @@ function summaryMin(uint256 a, uint256 b) returns uint256 {
 // A reverted call leaves collateral unchanged. Successful ordinary actions cannot reduce collateral
 // owned by an unrelated, unauthorized healthy user. Liquidation seizes collateral by design. Settlement
 // seizes only from the borrower it is aimed at, which the caller must be authorized for, and its effect on
-// every other account's health is covered by settleKeepsAccountsHealthy in Settlement.spec.
+// every other account's health is covered by the stayHealthySettle* rules in StayHealthy.spec.
 rule healthyUserCannotLoseCollateral(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView

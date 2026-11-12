@@ -46,7 +46,7 @@ Authorization rules distinguish adverse changes from permissionless beneficial a
 
 ### Health
 
-The health rules use upward-rounded debt and LLTV-adjusted collateral value; equality is healthy. [`StayHealthy.spec`](specs/StayHealthy.spec) checks that ordinary actions preserve a previously healthy position when no interest elapses during the checked call. When liquidation reduces collateral to zero, the core writes off any remaining debt; settlement is modeled separately because it has no liquidation incentive or core health check.
+The health rules use upward-rounded debt and LLTV-adjusted collateral value; equality is healthy. [`StayHealthy.spec`](specs/StayHealthy.spec) checks that ordinary actions preserve a previously healthy position when no interest elapses during the checked call. When liquidation reduces collateral to zero, the core writes off any remaining debt; settlement is modeled separately because it has no liquidation incentive or core health check. Settlement is checked in two parts, both for a call in which no interest accrues. `StayHealthy.spec` checks that a settlement cannot make another healthy account unhealthy. For the borrower being settled, `settleImprovePosition` in [`Settlement.spec`](specs/Settlement.spec) checks that the position does not get worse. The debt shares per unit of collateral do not grow, provided the collateral was worth more than the debt before the call.
 
 ### Settlement roles and rounding
 
@@ -81,7 +81,7 @@ Transition rules specify the post-state of successful calls. Separate `canRepayA
 | [`Reentrancy.spec`](specs/Reentrancy.spec) | External-call ordering and transient hook-lock lifecycle. |
 | [`Reverts.spec`](specs/Reverts.spec) | Input validation and revert conditions. |
 | [`Settlement.spec`](specs/Settlement.spec) | Borrow-share-anchored settlement, supply ownership, exact deltas, controller veto, and rollback. |
-| [`StayHealthy.spec`](specs/StayHealthy.spec) | With no interest elapsed during the checked call, ordinary actions preserve a previously healthy position; separate rules cover liquidation cases. |
+| [`StayHealthy.spec`](specs/StayHealthy.spec) | With no interest elapsed during the checked call, ordinary actions preserve a previously healthy position; separate rules cover liquidation and settlement cases. |
 | [`Transfer.spec`](specs/Transfer.spec) | Safe-transfer summaries and supported ERC-20 return patterns. |
 
 Each [`certora/confs`](confs) file selects a harness, one or more CVL specifications, and compiler settings. `Transfer.conf` also links the modeled contracts in [`certora/dispatch`](dispatch). [`certora/helpers`](helpers) exposes internal state needed by the rules.
@@ -91,11 +91,14 @@ Each [`certora/confs`](confs) file selects a harness, one or more CVL specificat
 - A successful Certora run is evidence for one source commit, configuration, and rule set. Keep the report URL or CI run with the reviewed commit.
 - Summaries replace some external calls. A result does not cover behavior excluded by those summaries.
 - Token assumptions exclude transfer fees, burns, and rebasing.
+- The health rules read the oracle price as one fixed value for the whole call. They do not cover an oracle whose price the call can move: one that reads LidoLend state, a token balance that the call changes, or a value that a controller writes in its hook. The price of a vault share backed by a position in a LidoLend market is such an oracle, and a settlement on that market can then make an account unhealthy in another market that takes the share as collateral.
+- The health rules for liquidation and settlement assume that no interest accrues during the checked call. `liquidate` and `settle` accrue interest before they price anything, so interest that is still pending is charged inside the same call. It can make another account unhealthy, or leave a settled position worse off than its stored state suggested.
 - Generic controller summaries do not explore calls from the controller into unhooked core functions, including `flashLoan` and authorization functions.
 - `Reentrancy.spec` treats selected-IRM `borrowRate` calls as trusted and does not prove safety against a reentrant or malicious IRM. The Foundry reentrancy suite covers controller hooks, not IRM callbacks.
 - The harness verifies the implementation directly and initializes its owner in the harness constructor. Proxy delegatecall storage, `initialize`, the EIP-712 domain behavior, and the upgrade lifecycle are outside the Certora model.
 - Liveness is conditional on controller acceptance and the modeled dependencies.
 - Settlement actor addresses are unconstrained unless a rule adds equality or inequality assumptions. Several rules require `msg.sender == onBehalf`; `onBehalf`, `borrower`, and `receiver` may otherwise alias.
+- No rule proves that a borrower that was healthy stays healthy after a settlement of its own position. `settleImprovePosition` proves only that its debt shares per unit of collateral do not grow.
 - `Settlement.spec` does not prove a one-unit bound on the total settlement gap. In the core math, only the up-versus-down borrow-share valuation has that bound; oracle conversion adds a separate remainder of less than one raw collateral-token unit.
 
 ## Running the rules
