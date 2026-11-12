@@ -25,6 +25,8 @@ methods {
     function MarketParamsLib.id(MorphoInternalAccess.MarketParams memory marketParams) internal returns MorphoInternalAccess.Id => summaryId(marketParams);
     function SafeTransferLib.safeTransfer(address token, address to, uint256 value) internal => summarySafeTransferFrom(token, currentContract, to, value);
     function SafeTransferLib.safeTransferFrom(address token, address from, address to, uint256 value) internal => summarySafeTransferFrom(token, from, to, value);
+    // NONDET models a controller that accepts every hooked action. A controller can veto any of them, so the
+    // exit rules below hold only while the controller accepts the exit.
     function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
@@ -51,7 +53,10 @@ function min(mathint a, mathint b) returns mathint {
     return a < b ? a : b;
 }
 
-// Assume no fee.
+// Assume no fee. The summary adds the interest to both totals and mints no fee shares, so the rules here do not
+// cover markets with a fee. On such a market, after a write-off of nearly all supply, the fee-share mint can
+// overflow the supply share total and make every accruing action revert, the exits included. certora/README.md
+// and SPECIFICATION.md describe that case.
 // Summarize the accrue interest to avoid having to deal with reverts with absurdly high borrow rates.
 function summaryAccrueInterest(env e, MorphoInternalAccess.MarketParams marketParams, MorphoInternalAccess.Id id) {
     // Safe require because timestamps cannot realistically be that large.
@@ -72,6 +77,9 @@ function summaryAccrueInterest(env e, MorphoInternalAccess.MarketParams marketPa
 
 definition isCreated(MorphoInternalAccess.Id id) returns bool =
     lastUpdate(id) != 0;
+
+// The delta rules below describe the call itself. The onMorpho* callbacks are modelled as not calling back into
+// the core, so nested actions run from a callback are not part of these deltas.
 
 // Check that tokens and shares are properly accounted following a supply.
 rule supplyChangesTokensAndShares(env e, MorphoInternalAccess.MarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, bytes data) {
@@ -173,7 +181,8 @@ rule borrowChangesTokensAndShares(env e, MorphoInternalAccess.MarketParams marke
     assert liquidityAfter == liquidityBefore - borrowedAssets;
 }
 
-// Check that you can borrow non-zero tokens by passing shares.
+// Check that you can borrow non-zero tokens by passing shares, in some state. The rule is existential. It does not
+// rule out states where nobody can borrow, such as a market whose borrow shares were inflated by zero-asset borrows.
 rule canBorrowByPassingShares(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address onBehalf, address receiver) {
     uint256 borrowedAssets;
     borrowedAssets, _ = borrow(e, marketParams, 0, shares, onBehalf, receiver);
@@ -295,7 +304,7 @@ rule liquidateChangesTokens(env e, MorphoInternalAccess.MarketParams marketParam
     assert liquidityAfter == liquidityBefore + min(repaidAssets, borrowLoanAssetsBefore);
 }
 
-// Check that you can liquidate non-zero tokens by passing shares.
+// Check that you can liquidate non-zero tokens by passing shares, in some state. The rule is existential.
 rule canLiquidateByPassingShares(env e, MorphoInternalAccess.MarketParams marketParams, address borrower, uint256 repaidShares, bytes data) {
     uint256 seizedAssets;
     uint256 repaidAssets;
@@ -316,7 +325,7 @@ rule setAuthorizationWithSigChangesNonceAndAuthorizes(env e, MorphoInternalAcces
     assert isAuthorized(authorization.authorizer, authorization.authorized) == authorization.isAuthorized;
 }
 
-// Check that one can always repay the debt in full.
+// Check that one can repay the debt in full, on a market without a fee, while the controller accepts the call.
 rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, bytes data) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
 
@@ -349,7 +358,10 @@ rule canRepayAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 
     assert !lastReverted;
 }
 
-// Check the one can always withdraw all, under the condition that there are no outstanding debt on the market.
+// Check that one can withdraw all, under the condition that there is no outstanding debt on the market, on a market
+// without a fee and while the controller accepts the call. No outstanding debt is stated as zero total borrow assets.
+// A market can keep a few units of debt assets with no borrow shares left after a full repay at a high borrow index,
+// and then the last supplier can only leave by assets.
 rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 shares, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
 
@@ -375,8 +387,9 @@ rule canWithdrawAll(env e, MorphoInternalAccess.MarketParams marketParams, uint2
     assert !lastReverted;
 }
 
-// Check that a user can always withdraw all, under the condition that this user does not have an outstanding debt.
-// Combined with the canRepayAll rule, this ensures that a borrower can always fully exit a market.
+// Check that a user can withdraw all collateral, under the condition that this user does not have an outstanding
+// debt, on a market without a fee and while the controller accepts the call. Combined with the canRepayAll rule,
+// this ensures that a borrower can fully exit such a market.
 rule canWithdrawCollateralAll(env e, MorphoInternalAccess.MarketParams marketParams, uint256 assets, address receiver) {
     MorphoInternalAccess.Id id = Util.libId(marketParams);
 

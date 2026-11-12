@@ -28,8 +28,9 @@ methods {
 
     function _.borrowRate(MorphoHarness.MarketParams, MorphoHarness.Market) external => HAVOC_ECF;
 
-    // NONDET is safe here: on() returns nothing, and this spec only reads currentContract storage and
-    // persistent ghosts, neither of which an external call can touch. HAVOC_ECF is equivalent for these
+    // NONDET models a controller that does not call back into the core. A real controller can call the
+    // unhooked core functions from its hook, such as flashLoan, the authorization functions, and the owner
+    // functions when it is the owner. certora/README.md lists this limit. HAVOC_ECF is equivalent for these
     // rules but times out on liquidate.
     function _.on(bytes32, uint8, bytes) external => NONDET;
 
@@ -38,8 +39,8 @@ methods {
     // paired writes and transfers. The summaries below are therefore a sound over-approximation, and
     // they remove the nonlinear arithmetic that times the liquidate case out. Rounding exactness is
     // proved in ExactMath / AssetsAccounting / LibSummary instead. Two linear facts are kept, both
-    // true of the real functions: every conversion maps zero to zero, and the ceil-direction conversions map a
-    // positive input to a positive output. Down-rounding may map positive assets to zero shares, as in
+    // proved for the real functions in LibSummary.spec: every conversion maps zero to zero, and the ceil-direction
+    // conversions map a positive input to a positive output. Down-rounding may map positive assets to zero shares, as in
     // asset-denominated repay.
     function SharesMathLib.toSharesUp(uint256 a, uint256 b, uint256 c) internal returns (uint256) => positivePreserving(a);
     function SharesMathLib.toSharesDown(uint256 a, uint256 b, uint256 c) internal returns (uint256) => zeroPreserving(a);
@@ -211,6 +212,45 @@ invariant onlyEnabledIrm(MorphoHarness.MarketParams marketParams)
 invariant settlementRequiresController(MorphoHarness.Id id)
     isSettlementEnabled(id) => marketController(id) != 0;
 
+// A market that is not created has no controller and no settlement opt-in.
+invariant notCreatedHasNoController(MorphoHarness.Id id)
+    !isCreated(id) => marketController(id) == 0 && !isSettlementEnabled(id)
+    {
+        preserved with (env e) {
+            // Safe require because a block timestamp is never zero and cannot realistically reach 2^128. Market
+            // creation stores the timestamp as lastUpdate in a uint128, so either value would leave a created
+            // market with lastUpdate zero.
+            require e.block.timestamp != 0 && e.block.timestamp < 2^128;
+        }
+    }
+
+// Plain market creation binds no controller and leaves settlement disabled.
+rule createMarketBindsNoController(env e, MorphoHarness.MarketParams marketParams) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    requireInvariant notCreatedHasNoController(id);
+
+    createMarket(e, marketParams);
+
+    assert marketController(id) == 0;
+    assert !isSettlementEnabled(id);
+}
+
+// Controlled market creation binds exactly the controller and settlement opt-in it is given.
+rule createControlledMarketBindsInputs(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address controller,
+    bool enableSettlement
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    requireInvariant notCreatedHasNoController(id);
+
+    createMarket(e, marketParams, controller, enableSettlement);
+
+    assert marketController(id) == controller;
+    assert isSettlementEnabled(id) == enableSettlement;
+}
+
 // Check the pseudo-injectivity of the hashing function id().
 rule libIdUnique() {
     MorphoHarness.MarketParams marketParams1;
@@ -275,7 +315,8 @@ rule userCannotGainBorrowShares(env e, method f, calldataarg args) filtered { f 
     assert sharesAfter <= sharesBefore;
 }
 
-// Check that users cannot lose collateral by unauthorized parties except through liquidation or settlement.
+// Check that users cannot lose collateral by unauthorized parties except through liquidation or settlement. Those two
+// are covered by liquidateOnlyTakesTargetCollateral and settleOnlyTakesTargetCollateral below.
 rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataarg args) filtered {
     f -> !f.isView
         && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
@@ -295,6 +336,46 @@ rule userCannotLoseCollateralExceptLiquidateOrSettle(env e, method f, calldataar
     mathint collateralAfter = collateral(id, user);
 
     assert collateralAfter >= collateralBefore;
+}
+
+// Settlement takes collateral only from the borrower it names, in the market it is called on.
+rule settleOnlyTakesTargetCollateral(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id;
+    address user;
+    require user != borrower || id != Util.libId(marketParams);
+
+    mathint collateralBefore = collateral(id, user);
+
+    settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
+
+    assert to_mathint(collateral(id, user)) == collateralBefore;
+}
+
+// Liquidation takes collateral only from the borrower it names, in the market it is called on.
+rule liquidateOnlyTakesTargetCollateral(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address borrower,
+    uint256 seizedAssets,
+    uint256 repaidShares,
+    bytes data
+) {
+    MorphoHarness.Id id;
+    address user;
+    require user != borrower || id != Util.libId(marketParams);
+
+    mathint collateralBefore = collateral(id, user);
+
+    liquidate(e, marketParams, borrower, seizedAssets, repaidShares, data);
+
+    assert to_mathint(collateral(id, user)) == collateralBefore;
 }
 
 // Check that users cannot lose collateral by unauthorized parties if they have no outstanding debt.

@@ -85,4 +85,9 @@ contract MorphoHarness is LidoLend {
     function hookInProgress() external view returns (bool) {
         return _hookInProgress;
     }
+
+    function authorizationDigest(Authorization memory authorization) external view returns (bytes32) {
+        bytes32 hashStruct = keccak256(abi.encode(AUTHORIZATION_TYPEHASH, authorization));
+        return keccak256(bytes.concat("\x19\x01", DOMAIN_SEPARATOR(), hashStruct));
+    }
 }

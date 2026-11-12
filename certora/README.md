@@ -72,17 +72,17 @@ Transition rules specify the post-state of successful calls. Separate `canRepayA
 | [`AccrueInterest.spec`](specs/AccrueInterest.spec) | Interest-accrual equivalence for actions that accrue first. |
 | [`AssetsAccounting.spec`](specs/AssetsAccounting.spec) | Entry and exit asset bounds. |
 | [`ConsistentState.spec`](specs/ConsistentState.spec) | Market totals, market independence, immutable configuration, and adverse unauthorized changes. |
-| [`ExactMath.spec`](specs/ExactMath.spec) | Full-repay exchange-rate reset and no-profit same-block supply/withdraw and borrow/repay round trips. |
+| [`ExactMath.spec`](specs/ExactMath.spec) | Borrow exchange rate at or below its initial value after a repay that overshoots total borrow assets, and no-profit same-block supply/withdraw and borrow/repay round trips. |
 | [`ExchangeRate.spec`](specs/ExchangeRate.spec) | Supply and borrow exchange-rate behavior. |
 | [`Health.spec`](specs/Health.spec) | Health and the boundary between liquidation and settlement. |
 | [`LibSummary.spec`](specs/LibSummary.spec) | Correctness assumptions for library summaries used by other rules. |
 | [`LiquidateBuffer.spec`](specs/LiquidateBuffer.spec) | Liquidation buffer properties under the stated price and interest assumptions. |
 | [`Liveness.spec`](specs/Liveness.spec) | Expected deltas of successful actions, subject to controller and dependency assumptions. |
-| [`Reentrancy.spec`](specs/Reentrancy.spec) | External-call ordering and transient hook-lock lifecycle. |
+| [`Reentrancy.spec`](specs/Reentrancy.spec) | External-call ordering, the transient hook-lock lifecycle, and hooked actions reverting while the lock is held. |
 | [`Reverts.spec`](specs/Reverts.spec) | Input validation and revert conditions. |
 | [`Settlement.spec`](specs/Settlement.spec) | Borrow-share-anchored settlement, supply ownership, exact deltas, controller veto, and rollback. |
 | [`StayHealthy.spec`](specs/StayHealthy.spec) | With no interest elapsed during the checked call, ordinary actions preserve a previously healthy position; separate rules cover liquidation and settlement cases. |
-| [`Transfer.spec`](specs/Transfer.spec) | Safe-transfer summaries and supported ERC-20 return patterns. |
+| [`Transfer.spec`](specs/Transfer.spec) | Safe-transfer summaries, supported ERC-20 return patterns, and the revert for a token address without code. |
 
 Each [`certora/confs`](confs) file selects a harness, one or more CVL specifications, and compiler settings. `Transfer.conf` also links the modeled contracts in [`certora/dispatch`](dispatch). [`certora/helpers`](helpers) exposes internal state needed by the rules.
 
@@ -90,15 +90,19 @@ Each [`certora/confs`](confs) file selects a harness, one or more CVL specificat
 
 - A successful Certora run is evidence for one source commit, configuration, and rule set. Keep the report URL or CI run with the reviewed commit.
 - Summaries replace some external calls. A result does not cover behavior excluded by those summaries.
-- Token assumptions exclude transfer fees, burns, and rebasing.
+- Token assumptions exclude transfer fees, burns, rebasing, and blocklists. A token that blocks an address can make a transfer revert although the balance is enough, which the transfer model does not cover.
 - The health rules read the oracle price as one fixed value for the whole call. They do not cover an oracle whose price the call can move: one that reads LidoLend state, a token balance that the call changes, or a value that a controller writes in its hook. The price of a vault share backed by a position in a LidoLend market is such an oracle, and a settlement on that market can then make an account unhealthy in another market that takes the share as collateral.
 - The health rules for liquidation and settlement assume that no interest accrues during the checked call. `liquidate` and `settle` accrue interest before they price anything, so interest that is still pending is charged inside the same call. It can make another account unhealthy, or leave a settled position worse off than its stored state suggested.
 - Generic controller summaries do not explore calls from the controller into unhooked core functions, including `flashLoan` and authorization functions.
+- The controller summaries also assume that the controller decides without reading core state. `AccrueInterest.spec` lets the controller reject an action by market and hook event only. A controller that decides from core totals can reach a different decision depending on whether `accrueInterest` ran first, and anyone can call `accrueInterest`.
+- The `onMorpho*` callbacks are modelled as not calling back into the core. The transition rules describe the call itself, while a real callback can run further actions in the same transaction, such as returning collateral to a borrower after a write-off.
 - `Reentrancy.spec` treats selected-IRM `borrowRate` calls as trusted and does not prove safety against a reentrant or malicious IRM. The Foundry reentrancy suite covers controller hooks, not IRM callbacks.
+- `noUnprotectedExternalCall` in `Reentrancy.spec` tracks `CALL` only. The oracle `price()` and the controller `marketId()` calls are `STATICCALL`s and can sit between storage accesses. A static callee cannot write state.
 - The harness verifies the implementation directly and initializes its owner in the harness constructor. Proxy delegatecall storage, `initialize`, the EIP-712 domain behavior, and the upgrade lifecycle are outside the Certora model.
 - Liveness is conditional on controller acceptance and the modeled dependencies.
+- The exit rules in `Liveness.spec` model accrual without a fee. On a market with a fee, after a write-off of nearly all supply, the fee-share mint can overflow the supply share total and block every action that accrues first. [`SPECIFICATION.md`](../SPECIFICATION.md#trust-assumptions) describes the case.
 - Settlement actor addresses are unconstrained unless a rule adds equality or inequality assumptions. Several rules require `msg.sender == onBehalf`; `onBehalf`, `borrower`, and `receiver` may otherwise alias.
-- No rule proves that a borrower that was healthy stays healthy after a settlement of its own position. `settleImprovePosition` proves only that its debt shares per unit of collateral do not grow.
+- No rule proves that a borrower that was healthy stays healthy after a settlement of its own position. `settleImprovePosition` proves only that its debt shares per unit of collateral do not grow. A rule stated through `isHealthy` times out, and `testSettleKeepsHealthyBorrowerHealthyFuzz` in [`SettleMathTest`](../test/integration/SettleMathTest.sol) checks the property by fuzzing instead.
 - `Settlement.spec` does not prove a one-unit bound on the total settlement gap. In the core math, only the up-versus-down borrow-share valuation has that bound; oracle conversion adds a separate remainder of less than one raw collateral-token unit.
 
 ## Running the rules

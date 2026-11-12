@@ -42,7 +42,7 @@ hook ALL_SLOAD(uint loc) uint v {
 hook CALL(uint g, address addr, uint value, uint argsOffset, uint argsLength, uint retOffset, uint retLength) uint rc {
     if (callIsBorrowRate || callIsControllerHook) {
         // IRM calls are trusted by the inherited model. Controller calls are protected by the
-        // transient hook lock and are checked separately below.
+        // transient hook lock, see hookedActionRevertsWhileLocked below.
         callIsBorrowRate = false;
         callIsControllerHook = false;
     } else {
@@ -63,22 +63,31 @@ rule noUnprotectedExternalCall(method f, env e, calldataarg data) {
     assert !hasReentrancyUnsafeCall;
 }
 
+// The actions that call the controller hook of their market.
+definition isHookedAction(method f) returns bool =
+    f.selector == sig:supply(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector
+    || f.selector == sig:withdraw(MorphoHarness.MarketParams, uint256, uint256, address, address).selector
+    || f.selector == sig:borrow(MorphoHarness.MarketParams, uint256, uint256, address, address).selector
+    || f.selector == sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector
+    || f.selector == sig:supplyCollateral(MorphoHarness.MarketParams, uint256, address, bytes).selector
+    || f.selector == sig:withdrawCollateral(MorphoHarness.MarketParams, uint256, address, address).selector
+    || f.selector == sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+    || f.selector == sig:accrueInterest(MorphoHarness.MarketParams).selector
+    || f.selector == sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector;
+
 // Every successfully completed hooked action releases the transient lock.
-rule hookedActionReleasesLock(method f, env e, calldataarg data) filtered {
-    f ->
-        f.selector == sig:supply(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector
-        || f.selector == sig:withdraw(MorphoHarness.MarketParams, uint256, uint256, address, address).selector
-        || f.selector == sig:borrow(MorphoHarness.MarketParams, uint256, uint256, address, address).selector
-        || f.selector == sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector
-        || f.selector == sig:supplyCollateral(MorphoHarness.MarketParams, uint256, address, bytes).selector
-        || f.selector == sig:withdrawCollateral(MorphoHarness.MarketParams, uint256, address, address).selector
-        || f.selector == sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
-        || f.selector == sig:accrueInterest(MorphoHarness.MarketParams).selector
-        || f.selector == sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
-} {
+rule hookedActionReleasesLock(method f, env e, calldataarg data) filtered { f -> isHookedAction(f) } {
     require !hookInProgress();
     f(e, data);
     assert !hookInProgress();
+}
+
+// While the lock is held, which is the case inside any controller hook, every hooked action reverts. A controller
+// therefore cannot run a hooked action from its hook.
+rule hookedActionRevertsWhileLocked(method f, env e, calldataarg data) filtered { f -> isHookedAction(f) } {
+    require hookInProgress();
+    f@withrevert(e, data);
+    assert lastReverted;
 }
 
 // Check that LidoLend never executes a delegatecall.

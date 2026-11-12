@@ -40,14 +40,15 @@ function summaryMin(uint256 a, uint256 b) returns uint256 {
     return a < b ? a : b;
 }
 
-// A reverted call leaves collateral unchanged. Successful ordinary actions cannot reduce collateral
-// owned by an unrelated, unauthorized healthy user. Liquidation seizes collateral by design. Settlement
-// seizes only from the borrower it is aimed at, which the caller must be authorized for, and its effect on
-// every other account's health is covered by the stayHealthySettle* rules in StayHealthy.spec.
+// A reverted call leaves collateral unchanged. Successful actions, liquidation included, cannot reduce
+// collateral owned by an unrelated, unauthorized healthy user. Settlement is left out because it can. It takes
+// collateral from any borrower it names, healthy or not, and only the supply owner onBehalf authorizes it, not
+// the borrower. The borrower is paid in canceled debt at the oracle price. settleOnlyTakesTargetCollateral in
+// ConsistentState.spec shows that no other account loses collateral, and the stayHealthySettle* rules in
+// StayHealthy.spec cover the health of every other account.
 rule healthyUserCannotLoseCollateral(env e, method f, calldataarg data)
 filtered {
     f -> !f.isView
-        && f.selector != sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
         && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
 }
 {
@@ -97,7 +98,8 @@ rule healthyUserCannotBeLiquidated(
 }
 
 // Only a settlement-enabled market can contain residual debt after a successful cut removes all
-// collateral. Other LidoLend actions retain the stronger debt-implies-collateral property.
+// collateral. Other LidoLend actions retain the stronger debt-implies-collateral property, see
+// nonSettleKeepsDebtCollateralized below.
 invariant debtWithoutCollateralRequiresSettlementMarket(MorphoHarness.Id id, address borrower)
     borrowShares(id, borrower) != 0 && collateral(id, borrower) == 0 => isSettlementEnabled(id);
 
@@ -106,7 +108,43 @@ rule debtWithoutCollateralInvariantIsNontrivial(MorphoHarness.Id id, address bor
     satisfy borrowShares(id, borrower) != 0 && collateral(id, borrower) == 0 && !isSettlementEnabled(id);
 }
 
+// Every action but settle keeps "debt implies collateral" for an account, on any market.
+rule nonSettleKeepsDebtCollateralized(env e, method f, calldataarg data)
+filtered {
+    f -> !f.isView
+        && f.selector != sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
+}
+{
+    MorphoHarness.Id id;
+    address borrower;
+
+    require borrowShares(id, borrower) != 0 => collateral(id, borrower) != 0;
+
+    f(e, data);
+
+    assert borrowShares(id, borrower) != 0 => collateral(id, borrower) != 0;
+}
+
+// When liquidation reduces collateral to zero, the core writes off the remaining debt, on any market.
+rule liquidateToZeroCollateralClearsDebt(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    address borrower,
+    uint256 seizedAssets,
+    uint256 repaidShares,
+    bytes data
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+
+    liquidate(e, marketParams, borrower, seizedAssets, repaidShares, data);
+
+    assert collateral(id, borrower) == 0 => borrowShares(id, borrower) == 0;
+}
+
 // Checks that passing a seized amount input to liquidate leads to repaid shares S and repaid amount A such that liquidating instead with shares S also repays the amount A.
+// The repaid amount is computed from the repaid shares after both input branches, so the rule checks that pairing
+// and not the liquidation formulas themselves. liquidateImprovePosition in LiquidateBuffer.spec bounds those. The
+// rule covers markets without a controller only.
 rule liquidateEquivalentInputDebtAndInputCollateral(
     env e,
     MorphoHarness.MarketParams marketParams,
@@ -116,7 +154,7 @@ rule liquidateEquivalentInputDebtAndInputCollateral(
 ) {
     MorphoHarness.Id id = Util.libId(marketParams);
 
-    // Isolate the two core liquidation formulas from hook behavior, callbacks and token behavior.
+    // Isolate the two liquidation calls from hook behavior, callbacks and token behavior.
     require e.msg.value == 0;
     require !hookInProgress();
     require marketController(id) == 0;

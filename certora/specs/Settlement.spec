@@ -49,7 +49,8 @@ function controllerOn(bytes32 id, uint8 hookEvent, bytes data) {
     }
 }
 
-// Settlement burns the exact debt-share input and applies the rounded-up supply burn exactly.
+// Settlement burns the exact debt-share input and applies its returned amounts exactly to positions and totals.
+// settleAmountsMatchFormulas checks the returned amounts themselves.
 rule settleAccounting(
     env e,
     MorphoHarness.MarketParams marketParams,
@@ -107,7 +108,8 @@ rule settleAccounting(
             - (to_mathint(borrowAssetsCanceled) - borrowAssetsRemoved);
 }
 
-// The exact borrow-share cut is checked against its actual rounded-up supply burn.
+// A cut whose rounded-up supply burn exceeds what onBehalf owns reverts before the controller hook, whatever the
+// number of lenders and borrowers, the size of the cut and the share price.
 rule settleRejectsRoundedBurnAboveOwnership(
     env e,
     MorphoHarness.MarketParams marketParams,
@@ -122,27 +124,14 @@ rule settleRejectsRoundedBurnAboveOwnership(
     uint256 borrowAssets = totalBorrowAssets(id);
     uint256 borrowSharesTotal = totalBorrowShares(id);
     uint256 ownedShares = supplyShares(id, onBehalf);
-    uint256 borrowerShares = borrowShares(id, borrower);
 
-    require e.msg.value == 0;
-    require e.msg.sender == onBehalf;
-    require receiver != 0 && marketParams.oracle != 0;
+    // Assumption to ensure that no interest is accumulated.
     require lastUpdate(id) == e.block.timestamp;
-    require lastUpdate(id) != 0;
-    require isSettlementEnabled(id) && marketController(id) != 0;
-    require !hookInProgress() && !controllerShouldRevert && !controllerWasCalled;
-    require borrowerShares > 0 && borrowSharesInput == borrowerShares;
-    require borrowerShares == borrowSharesTotal;
-    require ownedShares > 0 && ownedShares == supplySharesTotal;
-    require supplyAssets * 10^6 != supplySharesTotal;
+    require !controllerWasCalled;
 
     uint256 canceled = Util.toAssetsUp(borrowSharesInput, borrowAssets, borrowSharesTotal);
     uint256 requiredSupplyShares = Util.toSharesUp(canceled, supplyAssets, supplySharesTotal);
-    uint256 seizeBasis = Util.toAssetsDown(borrowSharesInput, borrowAssets, borrowSharesTotal);
-    uint256 seized = Util.libMulDivDown(seizeBasis, Util.oraclePriceScale(), oraclePrice);
     require requiredSupplyShares > ownedShares;
-    require canceled > 0 && canceled <= supplyAssets && canceled <= borrowAssets;
-    require oraclePrice > 0 && seized > 0 && seized <= collateral(id, borrower);
 
     settle@withrevert(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
 
@@ -176,7 +165,6 @@ rule settleAtOwnershipBoundary(
     require borrowerShares > 0 && borrowSharesInput == borrowerShares;
     require borrowerShares <= borrowSharesTotal;
     require ownedShares > 0 && ownedShares <= supplySharesTotal;
-    require supplyAssets * 10^6 != supplySharesTotal;
 
     uint256 canceled = Util.toAssetsUp(borrowSharesInput, borrowAssets, borrowSharesTotal);
     uint256 requiredSupplyShares = Util.toSharesUp(canceled, supplyAssets, supplySharesTotal);
@@ -194,7 +182,8 @@ rule settleAtOwnershipBoundary(
     assert borrowShares(id, borrower) == 0;
 }
 
-// When the hook returns, an affordable exact borrow-share cut is independent of free market liquidity.
+// When the hook returns, an affordable exact borrow-share cut succeeds at any free market liquidity, full
+// utilisation included, where a withdrawal of the same amount would revert.
 rule settlementIndependentOfFreeLiquidity(
     env e,
     MorphoHarness.MarketParams marketParams,
@@ -222,7 +211,6 @@ rule settlementIndependentOfFreeLiquidity(
     require ownedShares <= supplySharesTotal;
     require debtShares <= borrowSharesTotal;
     require supplyAssets >= borrowAssets;
-    require Util.toAssetsDown(ownedShares, supplyAssets, supplySharesTotal) == supplyAssets - borrowAssets;
 
     uint256 canceled = Util.toAssetsUp(borrowSharesInput, borrowAssets, borrowSharesTotal);
     uint256 requiredSupplyShares = Util.toSharesUp(canceled, supplyAssets, supplySharesTotal);
@@ -309,6 +297,89 @@ rule settleFullCloseZeroesPosition(
     settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
 
     assert borrowShares(id, borrower) == 0;
+}
+
+// The returned amounts are the formulas of the specification: the cut is valued up for the debt and the supply
+// burn, and down for the collateral payout. Any authorized caller, not only onBehalf itself.
+rule settleAmountsMatchFormulas(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    require !controllerShouldRevert;
+    // Assumption to ensure that no interest is accumulated.
+    require lastUpdate(id) == e.block.timestamp;
+
+    uint256 supplyAssetsBefore = totalSupplyAssets(id);
+    uint256 supplySharesBefore = totalSupplyShares(id);
+    uint256 borrowAssetsBefore = totalBorrowAssets(id);
+    uint256 borrowSharesBefore = totalBorrowShares(id);
+
+    uint256 collateralSeized;
+    uint256 borrowAssetsCanceled;
+    uint256 borrowSharesCanceled;
+    uint256 supplySharesBurned;
+    collateralSeized, borrowAssetsCanceled, borrowSharesCanceled, supplySharesBurned =
+        settle(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
+
+    assert borrowAssetsCanceled == Util.toAssetsUp(borrowSharesInput, borrowAssetsBefore, borrowSharesBefore);
+    assert supplySharesBurned == Util.toSharesUp(borrowAssetsCanceled, supplyAssetsBefore, supplySharesBefore);
+    assert collateralSeized
+        == Util.libMulDivDown(
+            Util.toAssetsDown(borrowSharesInput, borrowAssetsBefore, borrowSharesBefore),
+            Util.oraclePriceScale(),
+            oraclePrice
+        );
+}
+
+// A cut that would pay out no collateral reverts before the controller hook.
+rule settleRejectsZeroCollateralPayout(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    // Assumption to ensure that no interest is accumulated.
+    require lastUpdate(id) == e.block.timestamp;
+    require !controllerWasCalled;
+
+    uint256 seizeBasis = Util.toAssetsDown(borrowSharesInput, totalBorrowAssets(id), totalBorrowShares(id));
+    require Util.libMulDivDown(seizeBasis, Util.oraclePriceScale(), oraclePrice) == 0;
+
+    settle@withrevert(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
+
+    assert lastReverted;
+    assert !controllerWasCalled;
+}
+
+// A cut that would pay out more collateral than the borrower holds reverts before the controller hook.
+rule settleRejectsPayoutAboveCollateral(
+    env e,
+    MorphoHarness.MarketParams marketParams,
+    uint256 borrowSharesInput,
+    address onBehalf,
+    address borrower,
+    address receiver
+) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    // Assumption to ensure that no interest is accumulated.
+    require lastUpdate(id) == e.block.timestamp;
+    require !controllerWasCalled;
+
+    uint256 seizeBasis = Util.toAssetsDown(borrowSharesInput, totalBorrowAssets(id), totalBorrowShares(id));
+    require Util.libMulDivDown(seizeBasis, Util.oraclePriceScale(), oraclePrice) > collateral(id, borrower);
+
+    settle@withrevert(e, marketParams, borrowSharesInput, onBehalf, borrower, receiver);
+
+    assert lastReverted;
+    assert !controllerWasCalled;
 }
 
 // A settle does not raise the settled borrower's ratio of debt shares to collateral. This holds for a

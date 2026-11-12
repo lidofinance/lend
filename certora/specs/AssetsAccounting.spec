@@ -84,9 +84,28 @@ rule borrowAssetsAccounting(env e, MorphoHarness.MarketParams marketParams, uint
 
     uint256 owedAssetsBefore = expectedBorrowAssets(id, onBehalf);
 
-    // The borrow call is restricted to shares as input to make it easier on the prover.
+    // The borrow call takes shares as input here, and borrowAssetsAccountingByAssets below takes assets.
     uint256 borrowedAssets;
     borrowedAssets, _ = borrow(e, marketParams, 0, shares, onBehalf, receiver);
+
+    uint256 owedAssets = expectedBorrowAssets(id, onBehalf);
+
+    assert owedAssetsBefore + borrowedAssets <= to_mathint(owedAssets);
+}
+
+// The same as borrowAssetsAccounting with assets as input.
+rule borrowAssetsAccountingByAssets(env e, MorphoHarness.MarketParams marketParams, uint256 assets, address onBehalf, address receiver) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+
+    // Assume no interest as it would increase the total borrowed assets.
+    require lastUpdate(id) == e.block.timestamp;
+    // Safe require because of the sumBorrowSharesCorrect invariant.
+    require borrowShares(id, onBehalf) <= totalBorrowShares(id);
+
+    uint256 owedAssetsBefore = expectedBorrowAssets(id, onBehalf);
+
+    uint256 borrowedAssets;
+    borrowedAssets, _ = borrow(e, marketParams, assets, 0, onBehalf, receiver);
 
     uint256 owedAssets = expectedBorrowAssets(id, onBehalf);
 

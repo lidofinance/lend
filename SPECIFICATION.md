@@ -225,7 +225,7 @@ A proxy deployment must preserve this storage layout and initialize the core ato
 
 The inherited safety model assumes an oracle price cannot fall instantaneously below its previous value multiplied by `LLTV * LIF`. A larger jump can move a position past the collateral-exhaustion loss boundary before liquidation can act.
 
-Loan assets supplied and borrowed must also remain small enough for share totals to fit in `uint128`; the [`IMorpho` dependency assumptions](src/interfaces/IMorpho.sol) place the practical bound near `1e32` raw loan-token units. A near-total write-off lowers this bound to dust: with supply assets written down to about one raw unit while the share total stays, any supply of an 18-decimal loan token above a tiny amount overflows the share total and reverts. A 6-decimal loan token keeps a usable bound.
+Loan assets supplied and borrowed must also remain small enough for share totals to fit in `uint128`; the [`IMorpho` dependency assumptions](src/interfaces/IMorpho.sol) place the practical bound near `1e32` raw loan-token units. A near-total write-off of a large market lowers this bound, because later supply mints shares at the written-down share price, so an 18-decimal loan token can then take almost no supply, while a 6-decimal one keeps a usable bound. On a market with a fee, a share total near the limit also freezes the market: the next accrual's fee shares no longer fit, so every action that accrues first reverts, collateral withdrawals and `setFee` included. After such a write-off, anyone can push the share total there by supplying up to the limit.
 
 ## Compatibility and fork delta
 
