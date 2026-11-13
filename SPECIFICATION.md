@@ -39,7 +39,10 @@ The core contract performs accounting and token transfers. A controller may acce
 
 Lenders supply loan assets and receive supply shares. Borrowers supply collateral and incur borrow shares when they borrow. Share-to-asset conversions use `VIRTUAL_ASSETS = 1` and `VIRTUAL_SHARES = 1e6`. Credits and outputs generally round down; required inputs, debits, and share burns generally round up. Asset amounts are raw token units, share amounts are raw share units, and WAD-scaled fractions use `1e18` as one.
 
-Interest accrues lazily. Most actions accrue before resolving their amounts. External `accrueInterest` may be called by anyone. `supplyCollateral` does not accrue because collateral does not affect the interest calculation. For a positive elapsed interval of `t` seconds and a non-zero IRM, the core obtains a per-second WAD rate `r` and computes a WAD growth factor with `wTaylorCompounded(r, t)`. The function uses the first three non-zero Taylor terms to approximate `e^((r / 1e18) * t) - 1`. Multiplying total borrow assets by that factor, rounded down, gives the accrued interest. The same interest amount increases total borrow assets and total supply assets. A zero-address IRM accrues no interest. If the market fee is non-zero, the core mints supply shares to `feeRecipient`.
+Interest accrues lazily. Most actions accrue before resolving their amounts, and external `accrueInterest` may be called by anyone. `supplyCollateral` does not accrue, since collateral does not affect interest. For `t` seconds since the last accrual and a non-zero IRM, the core takes a per-second WAD rate `r` from the IRM and books `totalBorrowAssets * wTaylorCompounded(r, t)`, rounded down, as interest. `wTaylorCompounded` uses the first three non-zero Taylor terms of `e^((r / 1e18) * t) - 1`. The interest raises total borrow assets and total supply assets alike, and a zero-address IRM accrues none. With a non-zero fee, the core mints supply shares worth `fee` times the interest to `feeRecipient`, with the fee rounded down to raw loan-token units and the shares down to whole supply shares.
+
+> [!NOTE]
+> **The fee is floored at each accrual.** Over `n` accruals the fee recipient can receive up to about `n - 1` raw loan-token units less than one accrual over the same interest would pay. The shortfall stays with the suppliers.
 
 A borrower is healthy when its upward-rounded debt is less than or equal to its downward-rounded collateral value multiplied by `LLTV`. For an unhealthy position, the liquidation incentive factor (`LIF`) depends on the market's `LLTV`. Ignoring intermediate WAD rounding:
 
@@ -49,7 +52,13 @@ LIF = min(1.15, 1 / (1 - 0.3 * (1 - LLTV)))
 
 Lowering `LLTV` increases `LIF` until the 1.15 cap is reached. Ignoring raw-unit rounding, the liquidator receives collateral worth `LIF` times the repaid debt, so exhausting collateral can repay at most `collateralValue / LIF`. Any remaining debt is removed from both total borrow assets and total supply assets and is borne by lenders. This loss can occur while the debt is still less than or equal to the full collateral value.
 
+> [!WARNING]
+> **A supplier that exits before bad debt is written off shifts its share of the bad debt to the others.** This remaining debt reaches supply shares only when a liquidation leaves the borrower with no collateral. Where the market's hooks allow it, a liquidating supplier can leave one raw collateral unit, withdraw at the unchanged share price, and then take the last unit, so the suppliers who stay bear the whole bad debt.
+
 Authorization allows an operator to reduce another account's supply, increase its debt, or withdraw its collateral. The core does not require authorization to supply assets, repay debt, or add collateral for another account. Authorization is global to the core, not scoped by market or action. An operator authorized for `settle` can therefore also withdraw supply, borrow, or withdraw collateral for the same account in every market stored by that core.
+
+> [!NOTE]
+> **A direct revocation does not void an unused signed grant.** `setAuthorization(operator, false)` leaves the authorizer's nonce unchanged, so anyone holding an unused signed grant can still restore the operator until its deadline. A signed revocation with the same nonce, submitted first, voids the grant.
 
 ## Market creation
 
@@ -173,12 +182,7 @@ Subtracting the upward-rounded `borrowAssetsCanceled` may reduce the loan-token 
 Ignoring rounding, settlement removes the same loan-token value from debt and collateral. The difference between them does not change. For a partial cut that leaves both debt and collateral, LTV falls when it starts below 100%, stays unchanged at 100%, and rises when it starts above 100%. The actual calculation rounds debt up and collateral down, so a controller must use the resolved hook amounts.
 
 > [!NOTE]
-> **Some debt cannot be cleared through `settle`.**
->
-> - **Zero collateral payout.** If settling all remaining borrow shares gives `seizedAssets == 0`, the core rejects the call before the controller hook. At the same market totals and oracle price, every smaller cut also gives zero. This case should be resolved by calling `repay` for the remaining borrow shares.
-> - **Zero collateral with debt remaining.** If settlement takes all collateral before all borrow shares are canceled, the remaining shares stay as debt. A liquidator can use a helper contract to add one raw collateral-token unit for the borrower and then call `liquidate` with `seizedAssets = 1` and `repaidShares = 0` in the same transaction. If the borrower remains unhealthy and the derived `repaidShares` do not exceed its remaining borrow shares, the liquidator receives the collateral unit back and pays the calculated loan-token amount. The bad-debt branch then clears that borrower's remaining shares and writes off their asset value against suppliers, capped by the market's remaining `totalBorrowAssets`. A controlled market must accept both hooks; a paused controller may reject them. Token policy must also allow the transfers, so a helper receiving transfer-gated collateral must be eligible. If the remaining borrow shares represent only dust-sized debt, prefer `repay` instead.
->
-> The core has no standalone write-off function.
+> **Some debt cannot be cleared through `settle`.** Settlement pays the lender with the borrower's collateral, so it cannot help in two cases. If the debt is so small that its collateral payout rounds to zero, the core rejects the settlement, and only `repay` clears that debt. If a settlement takes all the collateral and leaves debt, the debt stays until someone liquidates one share of it: with no collateral left, the core then writes the rest off against suppliers. That liquidation costs about one raw loan-token unit and works if the controller accepts it and the collateral token allows a zero-amount transfer. The core has no other write-off function.
 
 ## Proxy and storage
 
@@ -209,12 +213,14 @@ A proxy deployment must preserve this storage layout and initialize the core ato
 | Proxy admin, if the deployment is upgradeable | Can replace core logic and therefore has full power over state and funds while upgrades remain possible. |
 | Owner | Creates markets, changes the market fee up to `MAX_FEE`, changes `feeRecipient`, and transfers ownership. Changing `feeRecipient` before accrual directs pending fee shares to the new recipient. Setting the owner to zero permanently disables normal market creation and fee administration unless the proxy is upgraded. |
 | Controller | Can reject every hooked action in its market. A faulty implementation can halt those actions. Binding grants no token allowance, LidoLend authorization, or core ownership. |
-| Oracle | Determines collateral value for health checks, liquidation, and settlement. It must return a strictly positive price at the required scale and must not revert or return values large enough to overflow core arithmetic. |
+| Oracle | Determines collateral value for health checks, liquidation, and settlement. It must return a strictly positive price at the required scale and must not return values large enough to overflow core arithmetic. A revert halts borrowing, collateral withdrawal with debt, liquidation, and settlement until the oracle returns a price again. The core's supply, supply withdrawal, repayment, and collateral supply do not read the price. |
 | IRM | Determines interest charged over time. It must not reenter or revert and must not return a rate large enough to overflow interest accrual. |
 | Tokens | Must not reenter, rebase, burn the core's balance arbitrarily, or charge transfer fees. Successful transfers must change balances by exactly the requested amount. Liveness also requires token policy to allow each required transfer; transfer-gated tokens may reject ineligible actors. |
 | Callback implementer | May execute arbitrary code before the action's final incoming token transfer. It must leave sufficient balance and allowance for that transfer. |
 
-The inherited safety model assumes an oracle price cannot fall instantaneously below its previous value multiplied by `LLTV * LIF`. A larger jump can move a position past the collateral-exhaustion loss boundary before liquidation can act. Loan assets supplied and borrowed must also remain small enough for share totals to fit in `uint128`; the [`IMorpho` dependency assumptions](src/interfaces/IMorpho.sol) place the practical bound near `1e32` raw loan-token units.
+The inherited safety model assumes an oracle price cannot fall instantaneously below its previous value multiplied by `LLTV * LIF`. A larger jump can move a position past the collateral-exhaustion loss boundary before liquidation can act.
+
+Loan assets supplied and borrowed must also remain small enough for share totals to fit in `uint128`; the [`IMorpho` dependency assumptions](src/interfaces/IMorpho.sol) place the practical bound near `1e32` raw loan-token units. A near-total write-off lowers this bound to dust: with supply assets written down to about one raw unit while the share total stays, any supply of an 18-decimal loan token above a tiny amount overflows the share total and reverts. A 6-decimal loan token keeps a usable bound.
 
 ## Compatibility and fork delta
 
