@@ -43,7 +43,7 @@ filtered {
 //   - the market of the liquidation is the market of the user, see the *DifferentMarkets rule,
 //   - there is still some borrow on the market after liquidation, see the *LastBorrow rule,
 //   - the liquidator passes seizedAssets, see the *ByShares rule for repaidShares,
-//   - no bad debt is realized, see the *BadDebt rule.
+//   - no bad debt is realized, see the *BadDebt rules.
 rule stayHealthyLiquidate(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, bytes data) {
     MorphoHarness.Id id = Util.libId(marketParams);
     address user;
@@ -109,8 +109,10 @@ rule stayHealthyLiquidateByShares(env e, MorphoHarness.MarketParams marketParams
     assert stillHealthy;
 }
 
-// The same as stayHealthyLiquidate when bad debt is realized and some borrow remains, with either input.
-rule stayHealthyLiquidateBadDebt(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, uint256 repaidShares, bytes data) {
+// The same as stayHealthyLiquidate when bad debt is realized and some borrow remains, with the seized-assets
+// input. The repayment and the write-off both remove debt assets rounded up against an exact share burn, so the
+// value of a borrow share does not rise. That is checked first, as a hint for the debt of the user.
+rule stayHealthyLiquidateBadDebt(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, bytes data) {
     MorphoHarness.Id id = Util.libId(marketParams);
     address user;
 
@@ -118,13 +120,15 @@ rule stayHealthyLiquidateBadDebt(env e, MorphoHarness.MarketParams marketParams,
     require isHealthy(marketParams, user);
 
     uint256 debtSharesBefore = borrowShares(id, user);
+    mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
+    mathint borrowSharesBefore = virtualTotalBorrowShares(id);
     uint256 debtAssetsBefore = mulDivUp(debtSharesBefore, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
     // Safe require because of the invariants onlyEnabledLltv and lltvSmallerThanWad in ConsistentState.spec.
     require marketParams.lltv < 10^18;
     // Assumption to ensure that no interest is accumulated.
     require lastUpdate(id) == e.block.timestamp;
 
-    liquidate(e, marketParams, borrower, seizedAssets, repaidShares, data);
+    liquidate(e, marketParams, borrower, seizedAssets, 0, data);
 
     // Safe require because of the invariant sumBorrowSharesCorrect.
     require borrowShares(id, user) <= totalBorrowShares(id);
@@ -137,6 +141,43 @@ rule stayHealthyLiquidateBadDebt(env e, MorphoHarness.MarketParams marketParams,
 
     assert user != borrower;
     assert debtSharesBefore == borrowShares(id, user);
+    assert virtualTotalBorrowAssets(id) * borrowSharesBefore <= borrowAssetsBefore * virtualTotalBorrowShares(id);
+    assert debtAssetsBefore >= mulDivUp(debtSharesBefore, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
+
+    assert stillHealthy;
+}
+
+// The same as stayHealthyLiquidateBadDebt with the repaidShares input.
+rule stayHealthyLiquidateBadDebtByShares(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 repaidShares, bytes data) {
+    MorphoHarness.Id id = Util.libId(marketParams);
+    address user;
+
+    // Assume the invariant initially.
+    require isHealthy(marketParams, user);
+
+    uint256 debtSharesBefore = borrowShares(id, user);
+    mathint borrowAssetsBefore = virtualTotalBorrowAssets(id);
+    mathint borrowSharesBefore = virtualTotalBorrowShares(id);
+    uint256 debtAssetsBefore = mulDivUp(debtSharesBefore, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
+    // Safe require because of the invariants onlyEnabledLltv and lltvSmallerThanWad in ConsistentState.spec.
+    require marketParams.lltv < 10^18;
+    // Assumption to ensure that no interest is accumulated.
+    require lastUpdate(id) == e.block.timestamp;
+
+    liquidate(e, marketParams, borrower, 0, repaidShares, data);
+
+    // Safe require because of the invariant sumBorrowSharesCorrect.
+    require borrowShares(id, user) <= totalBorrowShares(id);
+    // Assume that there is still some borrow on the market after liquidation.
+    require totalBorrowAssets(id) > 0;
+    // Assume bad debt realization.
+    require collateral(id, borrower) == 0;
+
+    bool stillHealthy = isHealthy(marketParams, user);
+
+    assert user != borrower;
+    assert debtSharesBefore == borrowShares(id, user);
+    assert virtualTotalBorrowAssets(id) * borrowSharesBefore <= borrowAssetsBefore * virtualTotalBorrowShares(id);
     assert debtAssetsBefore >= mulDivUp(debtSharesBefore, virtualTotalBorrowAssets(id), virtualTotalBorrowShares(id));
 
     assert stillHealthy;
