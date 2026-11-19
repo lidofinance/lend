@@ -105,7 +105,7 @@ The hook runs before the requested action's position writes, accounting writes, 
 | `supplyCollateral` | Current state without interest accrual, before the collateral increase. |
 | External `accrueInterest` | Pre-accrual state. The hook runs first. |
 
-The owner-only `setFee` path accrues with the old fee without dispatching an `AccrueInterest` hook. Fee shares minted during any accrual also dispatch no `Supply` hook. Controllers that mirror market totals must account for both cases.
+The owner-only `setFee` path accrues with the old fee without dispatching an `AccrueInterest` hook. Fee shares minted during any accrual also dispatch no `Supply` hook. The `Liquidate` hook payload does not carry the bad debt that the same call writes off after the hook returns. Controllers that mirror market totals must account for all three cases.
 
 `supply`, `repay`, `supplyCollateral`, and `liquidate` may call `onMorpho*` on `msg.sender` when callback data is non-empty. Their callback timing differs from a flash loan started inside a controller hook:
 
