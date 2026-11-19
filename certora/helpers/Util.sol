@@ -52,6 +52,26 @@ contract Util {
         return UtilsLib.min(x, y);
     }
 
+    function libWDivUp(uint256 x, uint256 y) external pure returns (uint256) {
+        return MathLib.wDivUp(x, y);
+    }
+
+    function libWDivDown(uint256 x, uint256 y) external pure returns (uint256) {
+        return MathLib.wDivDown(x, y);
+    }
+
+    function libWMulDown(uint256 x, uint256 y) external pure returns (uint256) {
+        return MathLib.wMulDown(x, y);
+    }
+
+    function libWTaylorCompounded(uint256 x, uint256 n) external pure returns (uint256) {
+        return MathLib.wTaylorCompounded(x, n);
+    }
+
+    function toSharesDown(uint256 assets, uint256 totalAssets, uint256 totalShares) external pure returns (uint256) {
+        return SharesMathLib.toSharesDown(assets, totalAssets, totalShares);
+    }
+
     function toSharesUp(uint256 assets, uint256 totalAssets, uint256 totalShares) external pure returns (uint256) {
         return SharesMathLib.toSharesUp(assets, totalAssets, totalShares);
     }

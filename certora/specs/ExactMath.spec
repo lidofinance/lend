@@ -24,7 +24,10 @@ methods {
     function _.on(bytes32, uint8, bytes) external => NONDET;
 }
 
-// Check that when not accruing interest, and when repaying all, the borrow exchange rate is at least reset to the initial exchange rate.
+// Check that when not accruing interest, a repay that overshoots total borrow assets by the one-unit rounding floors
+// them at zero, so the borrow exchange rate ends at or below the initial one. This overshoot happens while a borrow
+// share is worth less than at the start. A full repay of every share in a market where a borrow share is worth
+// more than at the start can leave some debt assets with no shares behind, so it does not reset the rate.
 // More details on the purpose of this rule in ExchangeRate.spec.
 rule repayAllResetsBorrowExchangeRate(env e, MorphoHarness.MarketParams marketParams, uint256 assets, uint256 shares, address onBehalf, bytes data) {
     MorphoHarness.Id id = Util.libId(marketParams);
@@ -40,7 +43,7 @@ rule repayAllResetsBorrowExchangeRate(env e, MorphoHarness.MarketParams marketPa
     mathint repaidAssets;
     repaidAssets, _ = repay(e, marketParams, assets, shares, onBehalf, data);
 
-    // Check the case where the market is fully repaid.
+    // Check the case where the repay overshoots total borrow assets, which are assetsBefore - 1.
     require repaidAssets >= assetsBefore;
 
     mathint assetsAfter = virtualTotalBorrowAssets(id);

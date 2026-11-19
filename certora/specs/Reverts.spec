@@ -19,6 +19,7 @@ methods {
     function isLltvEnabled(uint256) external returns bool envfree;
     function isAuthorized(address, address) external returns bool envfree;
     function nonce(address) external returns uint256 envfree;
+    function fee(MorphoHarness.Id) external returns uint256 envfree;
     function marketController(MorphoHarness.Id) external returns address envfree;
     function isSettlementEnabled(MorphoHarness.Id) external returns bool envfree;
 
@@ -92,9 +93,11 @@ rule setFeeInputValidation(env e, MorphoHarness.MarketParams marketParams, uint2
     MorphoHarness.Id id = Util.libId(marketParams);
     address oldOwner = owner();
     bool wasCreated = isCreated(id);
+    uint256 oldFee = fee(id);
     setFee@withrevert(e, marketParams, newFee);
     bool hasReverted = lastReverted;
-    assert e.msg.value != 0 || e.msg.sender != oldOwner || !wasCreated || newFee > Util.maxFee() => hasReverted;
+    assert e.msg.value != 0 || e.msg.sender != oldOwner || !wasCreated || newFee == oldFee
+        || newFee > Util.maxFee() => hasReverted;
 }
 
 // Check the revert condition for the setFeeRecipient function.
@@ -209,11 +212,21 @@ rule liquidateInputValidation(env e, MorphoHarness.MarketParams marketParams, ad
     assert !exactlyOneZero(seizedAssets, repaidShares) => lastReverted;
 }
 
-// Check that setAuthorizationWithSig reverts when its inputs are not validated.
+// Check the revert condition for the setAuthorization function.
+rule setAuthorizationRevertCondition(env e, address authorized, bool newIsAuthorized) {
+    bool wasAuthorized = isAuthorized(e.msg.sender, authorized);
+    setAuthorization@withrevert(e, authorized, newIsAuthorized);
+    assert lastReverted <=> e.msg.value != 0 || newIsAuthorized == wasAuthorized;
+}
+
+// Check that setAuthorizationWithSig reverts when its inputs are not validated, including a signature that does
+// not recover to the authorizer.
 rule setAuthorizationWithSigInputValidation(env e, MorphoHarness.Authorization authorization, MorphoHarness.Signature signature) {
     uint256 nonceBefore = nonce(authorization.authorizer);
+    address signer = ecrecover(authorizationDigest(e, authorization), signature.v, signature.r, signature.s);
     setAuthorizationWithSig@withrevert(e, authorization, signature);
-    assert e.block.timestamp > authorization.deadline || authorization.nonce != nonceBefore => lastReverted;
+    assert e.block.timestamp > authorization.deadline || authorization.nonce != nonceBefore
+        || signer == 0 || signer != authorization.authorizer => lastReverted;
 }
 
 // Check that accrueInterest reverts when its inputs are not validated.
@@ -223,7 +236,8 @@ rule accrueInterestInputValidation(env e, MorphoHarness.MarketParams marketParam
     assert !wasCreated => lastReverted;
 }
 
-// Check the settlement amount, market, receiver, and authorization guards.
+// Check the settlement amount, market, receiver, and authorization guards. The guards on the seized collateral
+// are checked in Settlement.spec.
 rule settleInputValidation(
     env e,
     MorphoHarness.MarketParams marketParams,

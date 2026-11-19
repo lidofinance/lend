@@ -19,7 +19,17 @@ methods {
     function _.onMorphoSupply(uint256, bytes) external => NONDET;
     function _.onMorphoSupplyCollateral(uint256, bytes) external => NONDET;
     function _.onMorphoFlashLoan(uint256, bytes) external => NONDET;
-    function _.on(bytes32, uint8, bytes) external => NONDET;
+    // The controller may reject a hooked action, but its verdict depends only on the market and the hook event.
+    // A controller that decides from core state does not commute with accrueInterest, see certora/README.md.
+    function _.on(bytes32 id, uint8 hookEvent, bytes data) external => controllerVerdict(id, hookEvent) expect void;
+}
+
+ghost controllerAccepts(bytes32, uint8) returns bool;
+
+function controllerVerdict(bytes32 id, uint8 hookEvent) {
+    if (!controllerAccepts(id, hookEvent)) {
+        revert("controller rejected");
+    }
 }
 
 ghost ghostMulDivUp(uint256, uint256, uint256) returns uint256;

@@ -8,6 +8,7 @@ This document maps fork requirements to the Foundry tests that exercise them; it
 | Controller hooks | `HooksIntegrationTest`, `ReentrancyIntegrationTest`, `SettleIntegrationTest` |
 | `settle` | `SettleMathTest`, `SettleMathCrowdedTest`, the four suites in `test/integration/SettleIncidenceTest.sol`, `SettleIntegrationTest`, `SettleRoundingAccumulationTest`, `SettleInvariantTest` |
 | Upgradeable initializer and storage | `InitializeIntegrationTest`, `MorphoStorageLibTest` |
+| Inherited share-limit behavior after a write-off | `WriteOffShareOverflowTest` |
 
 Run `forge test` for the complete Foundry suite. Run `forge coverage --report summary --no-match-coverage "test|mocks"` to produce coverage for the exact commit being reviewed. Do not copy percentages from an earlier commit: coverage can change without changing the test inventory.
 
@@ -141,6 +142,7 @@ The incidence cases establish who pays each rounding. These bound how much it ca
 | After a partial settlement, full-share repayment zeros the remaining debt and full collateral withdrawal returns every unseized collateral unit | `testSettleBorrowerExitsWhole` |
 | A full cut zeros all four market totals; a subsequent supply and full-share withdrawal round-trip exactly | `testSettleFullDrainLeavesMarketUsable` |
 | A lender == borrower loop: supply burn and borrow/collateral seizure hit distinct fields | `testSettleSelfPosition` |
+| A settled healthy borrower stays healthy, across a fuzzed LLTV, price, index drift and cut size | `testSettleKeepsHealthyBorrowerHealthyFuzz` |
 | Settlement on an underwater position does not socialize residual debt: supply decreases only by the canceled amount, and remaining debt shares stay on the borrower | `testSettleBadDebtNotRealizedFuzz` |
 | When settlement exhausts collateral while leaving expensive borrow shares, direct one-share liquidation reverts; with a permissive controller, a one-unit collateral top-up can be seized to trigger repayment and bad-debt realization | `testOneCollateralUnitTopUpEnablesBadDebtRealization` |
 
@@ -182,3 +184,13 @@ The solvency check in this stateful suite is one concrete test-controller behavi
 | The bare implementation deploys locked (`isInitialized`, no owner) and cannot be initialized directly | `testImplementationIsPetrified` |
 | The proxy and the implementation each derive the exact separator from their own address and the live `block.chainid`, and after a simulated chain split the proxy's separator tracks the new id | `testDomainSeparatorBindsToAddressAndChainId` |
 | The nine inherited slots remain at 0–8 and the fork fields at 9–11; the storage-library accessors round-trip each field | `MorphoStorageLibTest::testStorageForkSlots` |
+
+## 4. Share limit after a write-off
+
+[Trust assumptions](SPECIFICATION.md#trust-assumptions) describes how a write-off of nearly all supply lowers the `uint128` share limit and how, on a market with a fee, a share total close to the limit freezes every action that accrues first. This is inherited Morpho behavior. The tests pin it, so a change to it shows up in review.
+
+| Verifies | Test |
+|---|---|
+| After a write-off of a large market, a dust supply fills the share total, and one accrual later every accruing action reverts for good, a debt-free account's collateral withdrawal and the owner's `setFee(0)` included | `testFeeAccrualFreezesMarketAfterNearTotalWriteOff` |
+| After a write-off of a market that only held dust, the share limit stays far above dust, and a supply that fills it freezes the market in the same way | `testFeeAccrualFreezesMarketAfterDustWriteOff` |
+| Without a fee, the same sequence leaves the exits open | `testWriteOffWithoutFeeKeepsExitsOpen` |

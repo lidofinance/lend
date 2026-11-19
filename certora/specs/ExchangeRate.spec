@@ -128,6 +128,10 @@ rule liquidateWithoutBadDebtRealizationIncreasesSupplyExchangeRate(env e, Morpho
     // Here we assume interest has already been accumulated for this block.
     require lastUpdate(id) == e.block.timestamp;
 
+    // Without a callback. The liquidator's callback could add collateral back to the borrower after a write-off,
+    // which would defeat the check below that no bad debt was realized.
+    require data.length == 0;
+
     liquidate(e, marketParams, borrower, seizedAssets, repaidShares, data);
 
     mathint assetsAfter = virtualTotalSupplyAssets(id);
@@ -141,8 +145,8 @@ rule liquidateWithoutBadDebtRealizationIncreasesSupplyExchangeRate(env e, Morpho
 }
 
 // Check that except when not accruing interest, every function is decreasing the value of borrow shares.
-// The repay function is checked separately, see below.
-// The liquidate function is checked separately, see below.
+// Repay, liquidate and settle are checked separately below. Each of them can raise the value of borrow shares
+// when it leaves no debt assets, see borrowExchangeRateRisesOnlyWhenDebtAssetsEndAtZero.
 rule onlyAccrueInterestCanIncreaseBorrowExchangeRate(env e, method f, calldataarg args)
 filtered {
     f -> !f.isView &&
@@ -200,8 +204,11 @@ rule repayDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketPa
 // Settlement removes borrow assets rounded up against an exact debt-share burn, so the remaining
 // borrow shares retain or lose value. Its rounded-up supply burn increases the supply exchange rate.
 // Valuing the cut up can overshoot the debt total by one unit, in which case the write floors at zero and
-// leaves borrow shares standing against no assets, which resets the borrow rate rather than lowering it.
-// That degenerate path is excluded here and covered by the settlement accounting rules.
+// can leave borrow shares standing against no assets, which resets the borrow rate rather than lowering it.
+// That path is excluded here. It needs a borrow share worth less than at the start. A full close of the last
+// borrower is the usual case, and a large partial cut on a small debt total reaches it too.
+// borrowExchangeRateRisesOnlyWhenDebtAssetsEndAtZero covers it.
+// Any authorized caller is covered, not only onBehalf itself.
 rule settleExchangeRates(
     env e,
     MorphoHarness.MarketParams marketParams,
@@ -212,7 +219,6 @@ rule settleExchangeRates(
 ) {
     MorphoHarness.Id id = Util.libId(marketParams);
     require lastUpdate(id) == e.block.timestamp;
-    require e.msg.sender == onBehalf;
     require Util.toAssetsUp(borrowSharesInput, totalBorrowAssets(id), totalBorrowShares(id))
         <= totalBorrowAssets(id);
 
@@ -232,8 +238,11 @@ rule settleExchangeRates(
     assert borrowAssetsBefore * borrowSharesAfter >= borrowAssetsAfter * borrowSharesBefore;
 }
 
+// Check that when not accruing interest, liquidate is decreasing the value of borrow shares, unless it leaves no
+// debt assets.
 rule liquidateDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams marketParams, address borrower, uint256 seizedAssets, uint256 repaidShares, bytes data)
 {
+    // Without a callback, which could run further actions on the same market.
     require data.length == 0;
     MorphoHarness.Id id = Util.libId(marketParams);
 
@@ -248,8 +257,37 @@ rule liquidateDecreasesBorrowExchangeRate(env e, MorphoHarness.MarketParams mark
     mathint assetsAfter = virtualTotalBorrowAssets(id);
     mathint sharesAfter = virtualTotalBorrowShares(id);
 
+    // Exclude a liquidation that leaves no debt assets. The bad-debt write-off or a one-unit overshoot can then
+    // leave borrow shares against zero assets, which raises their value. borrowExchangeRateRisesOnlyWhenDebtAssetsEndAtZero
+    // covers that case.
     require assetsAfter != 1;
 
     // Check that the exchange rate decreases: assetsBefore/sharesBefore >= assetsAfter/sharesAfter
     assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore;
+}
+
+// Check that when not accruing interest, repay, liquidate and settle raise the value of borrow shares only when
+// they leave no debt assets in the market. This covers the paths that the three rules above exclude.
+rule borrowExchangeRateRisesOnlyWhenDebtAssetsEndAtZero(env e, method f, calldataarg args)
+filtered {
+    f -> f.selector == sig:repay(MorphoHarness.MarketParams, uint256, uint256, address, bytes).selector
+        || f.selector == sig:liquidate(MorphoHarness.MarketParams, address, uint256, uint256, bytes).selector
+        || f.selector == sig:settle(MorphoHarness.MarketParams, uint256, address, address, address).selector
+}
+{
+    MorphoHarness.Id id;
+
+    // Interest would increase borrow exchange rate, so we need to assume that no time passes.
+    require lastUpdate(id) == e.block.timestamp;
+
+    mathint assetsBefore = virtualTotalBorrowAssets(id);
+    mathint sharesBefore = virtualTotalBorrowShares(id);
+
+    f(e, args);
+
+    mathint assetsAfter = virtualTotalBorrowAssets(id);
+    mathint sharesAfter = virtualTotalBorrowShares(id);
+
+    // The virtual borrow assets are one when the market has no debt assets left.
+    assert assetsBefore * sharesAfter >= assetsAfter * sharesBefore || assetsAfter == 1;
 }

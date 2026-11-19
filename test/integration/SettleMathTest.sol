@@ -533,6 +533,47 @@ contract SettleMathTest is BaseTestWithController {
         assertEq(collateralToken.balanceOf(RECEIVER), vars.collateralSeized, "receiver collateral");
     }
 
+    // A settle of a healthy borrower's own position leaves it healthy, at any LLTV, price, index drift and cut. The
+    // Certora rule for this property times out, so it is checked here.
+    function testSettleKeepsHealthyBorrowerHealthyFuzz(
+        uint256 lltvSeed,
+        uint256 collateralSeed,
+        uint256 borrowSeed,
+        uint256 priceSeed,
+        uint256 elapsed,
+        uint256 sliceSeed
+    ) public {
+        // An odd LLTV never equals the even LLTV of a market that setUp created, so the market id is fresh.
+        (MarketParams memory params, Id marketId) =
+            _freshControlledMarket(bound(lltvSeed, MIN_TEST_LLTV, MAX_TEST_LLTV) | 1);
+        oracle.setPrice(bound(priceSeed, ORACLE_PRICE_SCALE / 100, 100 * ORACLE_PRICE_SCALE));
+
+        uint256 collateral = bound(collateralSeed, 1e6, 1e28);
+        uint256 maxBorrow = collateral.mulDivDown(oracle.price(), ORACLE_PRICE_SCALE).wMulDown(params.lltv);
+        vm.assume(maxBorrow > 0);
+        _supplyAs(params, address(this), maxBorrow);
+        _borrowAs(params, BORROWER, collateral, bound(borrowSeed, 1, maxBorrow));
+
+        vm.warp(block.timestamp + bound(elapsed, 0, 365 days));
+        morpho.accrueInterest(params);
+        vm.assume(_isHealthy(params, BORROWER));
+
+        Vars memory vars;
+        vars.borrowSharesBefore = morpho.borrowShares(marketId, BORROWER);
+        vars.borrowSharesCanceled = bound(sliceSeed, 1, vars.borrowSharesBefore);
+        vars.collateralSeized = _seizedForShares(marketId, vars.borrowSharesCanceled);
+        vars.debtCanceled = vars.borrowSharesCanceled
+        .toAssetsUp(morpho.totalBorrowAssets(marketId), morpho.totalBorrowShares(marketId));
+        vars.sliceShares =
+            vars.debtCanceled.toSharesUp(morpho.totalSupplyAssets(marketId), morpho.totalSupplyShares(marketId));
+        vm.assume(vars.collateralSeized > 0 && vars.collateralSeized <= morpho.collateral(marketId, BORROWER));
+        vm.assume(vars.sliceShares <= morpho.supplyShares(marketId, address(this)));
+
+        _lido().settle(params, vars.borrowSharesCanceled, address(this), BORROWER, RECEIVER);
+
+        assertTrue(_isHealthy(params, BORROWER), "settled borrower stays healthy");
+    }
+
     // Borrow shares are the exact anchor under interest drift; assets and the supply burn are both derived up.
     function testSettleShareRoundingWithInterestFuzz(uint256 elapsed, uint256 sliceSeed) public {
         (MarketParams memory params, Id marketId) = _openMarketWithAccruedInterest(0.5 ether, elapsed);

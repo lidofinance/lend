@@ -68,6 +68,25 @@ rule transferRevertCondition(address token, address to, uint256 amount) {
     assert lastReverted <=> initialBalance < amount;
 }
 
+// A transfer of a token address without code reverts. The other rules only reach the token models, which all
+// have code.
+rule transferRevertsWithoutCode(address token, address to, uint256 amount) {
+    require nativeCodesize[token] == 0;
+
+    libSafeTransfer@withrevert(token, to, amount);
+
+    assert lastReverted;
+}
+
+// A transferFrom of a token address without code reverts.
+rule transferFromRevertsWithoutCode(address token, address from, address to, uint256 amount) {
+    require nativeCodesize[token] == 0;
+
+    libSafeTransferFrom@withrevert(token, from, to, amount);
+
+    assert lastReverted;
+}
+
 // Check the revert condition of the summary of safeTransferFrom.
 rule transferFromRevertCondition(address token, address from, address to, uint256 amount) {
     uint256 initialBalance = balanceOf(token, from);
